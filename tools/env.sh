@@ -11,8 +11,9 @@ a() { "$ADB" -s $S "$@"; }
 shot() { if [ -n "$2" ]; then MSYS_NO_PATHCONV=1 "$ADB" -s $S exec-out screencap -d "$2" -p > "$1"; else MSYS_NO_PATHCONV=1 "$ADB" -s $S exec-out screencap -p > "$1"; fi; }
 # 빌드 + 설치
 bi() { (cd "$(dirname "${BASH_SOURCE[0]}")/../android" && ./build.sh assembleProto > ../tools/build.log 2>&1; grep -E "^e: |BUILD" ../tools/build.log | head -20) && a install -r "$(dirname "${BASH_SOURCE[0]}")/../android/app/build/outputs/apk/proto/app-proto.apk" | tail -1; }
-# 딥링크로 열기: open <port> [추가 쿼리]   (재생 서버 기본 sid/토큰. 실제 서버(인증 없음)에도 같은 값을 씁니다: 루프백이라 무시됨)
-open() { a shell "am start -W -a android.intent.action.VIEW -d 'playlink://127.0.0.1:$1/c?v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw&via=usb&take=1$2' -n $DIAG" | grep -E "Status|TotalTime"; }
+# 앱 열기(대기 화면). PC 에서는 fwd 뒤에 127.0.0.1:7400 으로 겁니다(가짜 PC: tools/playlink-proto.js pc, tools/app-fake-pc.js)
+open() { a shell am start -W -n $PKG/.MainActivity | grep -E "Status|TotalTime"; }
+fwd() { a reverse --remove-all > /dev/null; a forward tcp:${1:-7400} tcp:7300; }
 cmd() { a shell am start -n $DIAG --es cmd "$@" > /dev/null; }
 # 기록 파일 가져오기: pullrec  (tools/rec/ 로)
 pullrec() { mkdir -p "$(dirname "${BASH_SOURCE[0]}")/rec"; (cd "$(dirname "${BASH_SOURCE[0]}")/rec" && MSYS_NO_PATHCONV=1 "$ADB" -s $S pull /sdcard/Android/data/$PKG/files/rec/. . | tail -1); }
@@ -30,5 +31,5 @@ seg() {
   cmd rec_stop; sleep 1.5; pullrec > /dev/null
   local f=$(ls -t "$T"/rec/rec-*-"$name".json | head -1); node "$T/app-report.js" "$f" --skip=0.7
 }
-# 포트에서 듣는 프로세스를 끝냄(시험 서버 전용 포트에만 씁니다. 7300 은 쓰지 않습니다)
+# 포트에서 듣는 프로세스를 끝냄(시험 전용 포트에만 씁니다. 7300 은 쓰지 않습니다)
 killport() { [ "$1" = 7300 ] && return; for p in $(netstat -ano | grep -E "[:.]$1 .*LISTENING" | awk '{print $NF}' | sort -u); do taskkill //F //PID $p > /dev/null 2>&1; done; }

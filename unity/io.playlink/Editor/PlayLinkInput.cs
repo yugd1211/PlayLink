@@ -124,7 +124,7 @@ public static class PlayLinkInput
     }
 
     // 입력 소켓 수신 스레드에서 호출됩니다. JsonUtility는 백그라운드 스레드에서 써도 됩니다.
-    public static string HandleMessage(PlayLinkServer.Connection connection, string text)
+    public static string HandleMessage(PlayLinkPeer.Connection connection, string text)
     {
         Message message;
         try

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -9,35 +8,33 @@ using UnityEngine.LowLevel;
 using Debug = UnityEngine.Debug;
 using PlayerLoopPhase = UnityEngine.PlayerLoop;
 
-// PlayLink 2단계: 에디터 Game 뷰를 폰 브라우저로 보내고(MJPEG over WebSocket), 폰 터치를 레거시 Input 터치로 넣습니다.
-// 서버는 Play 중에만 돕니다(Play 진입 시 도메인 리로드로 정적 상태가 사라지므로). Play 종료, 도메인 리로드, 에디터 종료 때 반드시 닫습니다.
-// Editor 폴더의 MonoBehaviour는 런타임에 붙일 수 없어서(1단계 2.1) PlayerLoop에 단계를 끼워 넣어 구동합니다.
+// PlayLink 의 화면 전송: 에디터 Game 뷰를 연결된 폰으로 보내고(H.264 또는 MJPEG), 폰 터치를 레거시 Input 터치로 넣습니다.
+// 폰과의 연결은 PlayLinkLink 가 맡고(Play 밖에서도 유지), 여기는 Play 중에 그 연결(PlayLinkPeer)로 화면을 보내는 일만 합니다.
+// Play 종료, 도메인 리로드, 에디터 종료, 연결 끊김 때 반드시 멈춥니다.
+// Editor 폴더의 MonoBehaviour는 런타임에 붙일 수 없어서 PlayerLoop에 단계를 끼워 넣어 구동합니다.
 //   EarlyUpdate.UpdateInputManager 직전: 끝난 리드백 확인 → 캡처 요청 → 입력 주입 → 1초 통계
 //   PostLateUpdate 맨 끝: 저지연 리드백(기본 켬)일 때 이번 프레임 리드백을 기다림
 [InitializeOnLoad]
 public static class PlayLink
 {
     public const string LOG_PREFIX = "[PlayLink]";
-    public const int DEFAULT_PORT = 7300;
     public const int DEFAULT_QUALITY = 80;
     public const int DEFAULT_FPS_CAP = 60;
 
-    private const string PREF_PORT = "PlayLink_Port";
     private const string PREF_QUALITY = "PlayLink_JpegQuality";
     private const string PREF_FPS_CAP = "PlayLink_FpsCap";
-    private const string PREF_AUTO_START = "PlayLink_AutoStart";
     private const string PREF_LOW_LATENCY_READBACK = "PlayLink_LowLatencyReadback";
-    private const string PREF_ALLOW_LAN = "PlayLink_AllowLan";
-    private const string PREF_AUTO_ADB_REVERSE = "PlayLink_AutoAdbReverse";
     private const string PREF_AUTO_PACING = "PlayLink_AutoPacing";
-    private const string PREF_PREFER_WIRELESS = "PlayLink_PreferWireless";
     private const string PREF_STREAM_SCALE = "PlayLink_StreamScale";
     private const string PREF_VIDEO_CODEC = "PlayLink_VideoCodec";
     private const string PREF_H264_KBPS = "PlayLink_H264Kbps";
     private const string PREF_FFMPEG_PATH = "PlayLink_FfmpegPath";
+    private const string PREF_ENCODER = "PlayLink_H264Encoder";
+    private const string PREF_APP_URL = "PlayLink_AppDownloadUrl";
+    public const string DEFAULT_APP_URL = "https://github.com/yugd1211/PlayLink/releases/latest";
+    private const string SESSION_ENCODER_PROBE = "PlayLink_EncoderProbe";
     public const int DEFAULT_H264_KBPS = 6000;
     public static readonly int[] STREAM_SCALES = { 100, 75, 50 };
-    private const string PREF_WIRELESS_ADDRESS = "PlayLink_WirelessAddress";
     // 자동 프레임 간격: 한 장을 보내는 비용(수신 확인 시간과 폰 디코딩 시간 중 큰 값)이 보내는 간격의 이 비율을 넘으면 간격을 늘리고,
     // 한 단계 줄인 간격의 이 비율보다 작게 STEP_DOWN_SECONDS초 이어지면 줄입니다. 사이를 띄워 오르내림을 막습니다.
     private const float PACING_UP_RATIO = 0.85f;
@@ -57,8 +54,6 @@ public static class PlayLink
     private const int MAX_TRANSPORT_STRIDE = 4;
     // 게임 카메라가 이 시간 넘게 그리지 않으면 화면이 멈춘 것으로 보고 창과 폰에 알립니다.
     private const double STALE_MS = 700.0;
-    private const string PAGE_ASSET_NAME = "PlayLinkPage";
-    private const string SESSION_RESTART_AFTER_RELOAD = "PlayLink_RestartAfterReload";
 
     private struct RemoteStep { }
     private struct RemoteLateStep { }
@@ -130,7 +125,7 @@ public static class PlayLink
     private static long statsTicks;
     private static long statsFrameCount;
     private static long[] statsBase = new long[6];
-    private static PlayLinkServer server;
+    private static PlayLinkPeer peer;
     private static bool loopInstalled;
     private static volatile int jpegQuality;
     private static volatile int fpsCap;
@@ -138,14 +133,10 @@ public static class PlayLink
     private static volatile bool useH264;
     private static volatile int h264Kbps;
     private static volatile string ffmpegPath;
-    private static volatile string pagePath;
-    private static volatile bool preferWireless;
-
-    public static int Port
-    {
-        get { return EditorPrefs.GetInt(PREF_PORT, DEFAULT_PORT); }
-        set { EditorPrefs.SetInt(PREF_PORT, Mathf.Clamp(value, 1024, 65535)); }
-    }
+    private static volatile string encoderChoice;
+    // 인코더 자동 선택 결과("ffmpeg 경로|인코더 이름"). 인코더 스레드가 정하고, 메인 스레드가 SessionState 에 옮겨 리로드 뒤에도 다시 재지 않게 합니다.
+    private static volatile string encoderProbe;
+    private static volatile bool encoderProbeDirty;
 
     // 인코더 스레드가 읽으므로 EditorPrefs(메인 스레드 전용) 값을 정적 필드에 둡니다.
     public static int JpegQuality
@@ -175,7 +166,7 @@ public static class PlayLink
         set { EditorPrefs.SetInt(PREF_STREAM_SCALE, Mathf.Clamp(value, 25, 100)); }
     }
 
-    // 영상 형식: 켜면(기본) 페이지가 H.264(WebCodecs)를 지원하고 ffmpeg가 있을 때 H.264, 아니면 MJPEG. 끄면 항상 MJPEG
+    // 영상 형식: 켜면(기본) 앱이 H.264 를 지원하고 ffmpeg가 있을 때 H.264, 아니면 MJPEG. 끄면 항상 MJPEG
     public static bool UseH264
     {
         get { return useH264; }
@@ -212,10 +203,34 @@ public static class PlayLink
 
     public static string FfmpegPathForEncoder { get { return ffmpegPath; } }
 
-    public static bool AutoStart
+    // H.264 인코더: 빈 값이면 자동(NVIDIA → AMD → Intel → CPU 순으로 실제로 되는 첫 번째), 아니면 PlayLinkH264.ENCODERS 의 이름 하나로 고정
+    public static string EncoderChoice
     {
-        get { return EditorPrefs.GetBool(PREF_AUTO_START, false); }
-        set { EditorPrefs.SetBool(PREF_AUTO_START, value); }
+        get { return encoderChoice ?? string.Empty; }
+        set
+        {
+            encoderChoice = value ?? string.Empty;
+            EditorPrefs.SetString(PREF_ENCODER, encoderChoice);
+            PlayLinkCapture.RetryH264();
+        }
+    }
+
+    // 인코더 스레드가 읽고 씁니다(자동 선택 결과를 ffmpeg 경로별로 기억).
+    public static string EncoderProbe
+    {
+        get { return encoderProbe; }
+        set
+        {
+            encoderProbe = value;
+            encoderProbeDirty = true;
+        }
+    }
+
+    // 창의 "앱 다운로드" QR 에 넣는 주소. 공개 전에는 사내 위치로 바꿉니다.
+    public static string AppDownloadUrl
+    {
+        get { return EditorPrefs.GetString(PREF_APP_URL, DEFAULT_APP_URL); }
+        set { EditorPrefs.SetString(PREF_APP_URL, string.IsNullOrWhiteSpace(value) ? DEFAULT_APP_URL : value.Trim()); }
     }
 
     // 캡처 지연을 1프레임 줄이는 대신 메인 스레드가 GPU 복사를 잠깐(실측 평균 1~3ms) 기다립니다. 기본은 켬(실측 Unity fps 차이 없음).
@@ -225,36 +240,11 @@ public static class PlayLink
         set { EditorPrefs.SetBool(PREF_LOW_LATENCY_READBACK, value); }
     }
 
-    // 인증 없는 LAN 리슨("Wi-Fi 접속 허용", 예전의 AllowLan)은 없앴습니다(브리프 3.3 의 1번). 서버는 항상 127.0.0.1 에만 열고,
-    // 같은 Wi-Fi 연결은 앞단(PlayLinkHost)의 QR 인증 경로로만 받습니다.
-
-    // Start 때 USB 기기가 정확히 1대면 adb reverse를 자동으로 합니다.
-    public static bool AutoAdbReverse
-    {
-        get { return EditorPrefs.GetBool(PREF_AUTO_ADB_REVERSE, true); }
-        set { EditorPrefs.SetBool(PREF_AUTO_ADB_REVERSE, value); }
-    }
-
     // 전송(USB 대역폭)이나 폰 디코딩이 Unity fps를 못 따라가면 불규칙하게 버려지는 대신 N프레임마다 고르게 보냅니다(끊김 방지). 기본 켬
     public static bool AutoPacing
     {
         get { return EditorPrefs.GetBool(PREF_AUTO_PACING, true); }
         set { EditorPrefs.SetBool(PREF_AUTO_PACING, value); }
-    }
-
-    // 같은 폰이 USB와 무선(adb 무선)으로 함께 연결돼 있을 때 영상 터널(adb reverse)을 어느 쪽에 걸지. 끄면(기본) USB, 켜면 무선.
-    // 폰의 localhost:포트는 하나뿐이라 한쪽으로만 갑니다. 한쪽만 연결돼 있으면 그쪽으로 갑니다. adb 스레드가 읽으므로 정적 필드에 둡니다.
-    public static bool PreferWireless
-    {
-        get { return preferWireless; }
-        set
-        {
-            if (preferWireless != value)
-            {
-                preferWireless = value;
-                EditorPrefs.SetBool(PREF_PREFER_WIRELESS, value);
-            }
-        }
     }
 
     // 자동 프레임 간격이 정한 값(1 = 매 프레임). 캡처는 이 값과 FPS Cap 간격 중 큰 쪽을 씁니다.
@@ -265,19 +255,10 @@ public static class PlayLink
     private static volatile int pacingGraceSeconds;
     private static int pacingSecondsSinceStepDown;
 
-    // 마지막으로 무선 adb 연결에 성공한 주소(IP:포트). Start 때 연결된 기기가 없으면 이 주소로 다시 연결합니다.
-    public static string WirelessAddress
-    {
-        get { return EditorPrefs.GetString(PREF_WIRELESS_ADDRESS, string.Empty); }
-        set { EditorPrefs.SetString(PREF_WIRELESS_ADDRESS, value ?? string.Empty); }
-    }
-
     // 폰 화면이 멈춘 이유(Game 뷰 가려짐, 일시정지 등). 정상이면 null
     public static string StaleReason { get; private set; }
-    public static bool IsRunning { get { return server != null && server.IsRunning; } }
-    public static int RunningPort { get { return IsRunning ? server.Port : 0; } }
-    public static int VideoClients { get { return IsRunning ? server.CountConnections(PlayLinkServer.ChannelKind.Video) : 0; } }
-    public static int InputClients { get { return IsRunning ? server.CountConnections(PlayLinkServer.ChannelKind.Input) : 0; } }
+    // Play 중이고 폰으로 화면을 보내는 중인가
+    public static bool IsRunning { get { return peer != null; } }
     public static Snapshot Stats { get { return snapshot; } }
     // Unity 프레임 속도(지수 평균). 캡처 간격(N프레임마다 1번)을 정할 때 씁니다.
     public static float SmoothedUnityFps { get { return 1000f / Mathf.Max(1f, smoothedFrameMs); } }
@@ -286,35 +267,29 @@ public static class PlayLink
     static PlayLink()
     {
         jpegQuality = EditorPrefs.GetInt(PREF_QUALITY, DEFAULT_QUALITY);
-        preferWireless = EditorPrefs.GetBool(PREF_PREFER_WIRELESS, false);
         fpsCap = EditorPrefs.GetInt(PREF_FPS_CAP, DEFAULT_FPS_CAP);
         useH264 = EditorPrefs.GetInt(PREF_VIDEO_CODEC, 0) == 0;
         h264Kbps = EditorPrefs.GetInt(PREF_H264_KBPS, DEFAULT_H264_KBPS);
         ffmpegPath = EditorPrefs.GetString(PREF_FFMPEG_PATH, string.Empty);
-        EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-        AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+        encoderChoice = EditorPrefs.GetString(PREF_ENCODER, string.Empty);
+        string probe = SessionState.GetString(SESSION_ENCODER_PROBE, string.Empty);
+        encoderProbe = probe.Length > 0 ? probe : null;
+        AssemblyReloadEvents.beforeAssemblyReload += Stop;
         EditorApplication.quitting += Stop;
-        // 예전에 저장된 "Wi-Fi 접속 허용" 값은 더 이상 쓰지 않으므로 지웁니다.
-        if (EditorPrefs.HasKey(PREF_ALLOW_LAN))
-        {
-            EditorPrefs.DeleteKey(PREF_ALLOW_LAN);
-        }
+        EditorApplication.update += SaveEncoderProbe;
+    }
 
-        // Play 중 스크립트 재컴파일("Recompile And Continue Playing")로 리로드됐으면 서버를 다시 엽니다. 폰 페이지는 자동 재접속합니다.
-        if (SessionState.GetBool(SESSION_RESTART_AFTER_RELOAD, false))
+    private static void SaveEncoderProbe()
+    {
+        if (encoderProbeDirty)
         {
-            SessionState.EraseBool(SESSION_RESTART_AFTER_RELOAD);
-            EditorApplication.delayCall += () =>
-            {
-                if (EditorApplication.isPlaying)
-                {
-                    Start();
-                }
-            };
+            encoderProbeDirty = false;
+            SessionState.SetString(SESSION_ENCODER_PROBE, encoderProbe ?? string.Empty);
         }
     }
 
-    public static void Start()
+    // 연결된 폰으로 화면을 보내기 시작합니다(PlayLinkLink 가 Play 중에 연결이 준비되면 부름, 메인 스레드).
+    public static void Start(PlayLinkPeer target)
     {
         if (IsRunning)
         {
@@ -325,39 +300,12 @@ public static class PlayLink
         if (!EditorApplication.isPlaying)
         {
             LastError = "Play 모드에서만 시작할 수 있습니다.";
-            Debug.LogWarning($"{LOG_PREFIX} {LastError}");
             return;
         }
 
-        byte[] page = LoadPage();
-        if (page == null)
-        {
-            LastError = $"{PAGE_ASSET_NAME}.html을 찾을 수 없습니다.";
-            Debug.LogError($"{LOG_PREFIX} {LastError}");
-            return;
-        }
-
-        server = new PlayLinkServer(page);
-        server.onConnected = OnConnected;
-        server.onDisconnected = OnDisconnected;
-        server.onInputText = PlayLinkInput.HandleMessage;
-        server.onFrameSent = OnFrameSent;
-        server.onAck = OnAck;
-        server.onStatsRequest = BuildStatsJson;
-        server.onPageRequest = ReadPage;
-        server.onDebugRequest = HandleDebugRequest;
-        try
-        {
-            server.Start(Port);
-        }
-        catch (Exception e)
-        {
-            LastError = $"포트 {Port} 열기 실패: {e.Message}";
-            Debug.LogError($"{LOG_PREFIX} {LastError}");
-            server = null;
-            return;
-        }
-
+        peer = target;
+        target.onFrameSent = OnFrameSent;
+        target.onAck = OnAck;
         ResetStats();
         PlayLinkTrace.Reset();
         TransportStride = 1;
@@ -366,54 +314,34 @@ public static class PlayLink
         pacingBackoff = 0;
         pacingSecondsSinceStepDown = int.MaxValue / 2;
         StaleReason = null;
-        PlayLinkCapture.Start(server);
+        PlayLinkCapture.Start(target);
         InstallLoop();
         EditorApplication.update += CheckStale;
-        Debug.Log($"{LOG_PREFIX} server started on 127.0.0.1:{server.Port} (game view {Screen.width}x{Screen.height}, quality {JpegQuality}, fps cap {FpsCap}, low-latency readback {LowLatencyReadback})");
-        if (AutoAdbReverse)
-        {
-            PlayLinkAdb.AutoReverseAsync(server.Port, WirelessAddress);
-        }
-
-        // Play 밖에서 기다리던 앱(앞단의 대기실)이 곧바로 다시 붙어 이 서버로 넘어오게 합니다.
-        PlayLinkHost.OnServerStarted();
+        // 접속 직후(인코더 시작 · 폰 디코더 준비) 몇 초는 간격을 늘리는 판정을 하지 않습니다.
+        pacingGraceSeconds = PACING_CONNECT_GRACE_SECONDS;
+        target.SetLive(true);
+        Debug.Log($"{LOG_PREFIX} streaming started to {target.phoneName} ({target.remote}) (game view {Screen.width}x{Screen.height}, quality {JpegQuality}, fps cap {FpsCap}, low-latency readback {LowLatencyReadback})");
     }
 
+    // 화면 전송을 멈춥니다. 폰과의 연결은 닫지 않습니다(폰은 대기 문구로 돌아감).
     public static void Stop()
     {
-        if (server == null)
+        if (peer == null)
         {
             return;
         }
 
-        int port = server.Port;
-        PlayLinkServer stopping = server;
-        server = null;
+        PlayLinkPeer stopping = peer;
+        peer = null;
         EditorApplication.update -= CheckStale;
         StaleReason = null;
         UninstallLoop();
-        stopping.Stop();
+        stopping.onFrameSent = null;
+        stopping.onAck = null;
+        stopping.SetLive(false);
         PlayLinkCapture.Stop();
         PlayLinkInput.Reset();
-        Debug.Log($"{LOG_PREFIX} server stopped (port {port} closed)");
-    }
-
-    // 앞단(PlayLinkHost)이 인증을 마친 앱 소켓을 넘깁니다(앞단의 연결 스레드에서 불림).
-    // 서버가 돌고 있으면 그 연결이 끝날 때까지 돌아오지 않고 true, 돌고 있지 않으면 소켓을 건드리지 않고 false.
-    public static bool AdoptClient(System.Net.Sockets.TcpClient client, PlayLinkServer.ChannelKind kind, object tag)
-    {
-        PlayLinkServer target = server;
-        return target != null && target.Adopt(client, kind, tag);
-    }
-
-    // 인증된 앱 연결을 전부 이 닫기 코드로 닫습니다([새 QR 발급]: 4403).
-    public static void CloseAppClients(ushort code)
-    {
-        PlayLinkServer target = server;
-        if (target != null)
-        {
-            target.CloseTagged(code);
-        }
+        Debug.Log($"{LOG_PREFIX} streaming stopped");
     }
 
     public static double ElapsedMs(long stopwatchTicks)
@@ -481,45 +409,6 @@ public static class PlayLink
         frameMaxMs = Mathf.Max(frameMaxMs, ms);
     }
 
-    private static void OnConnected(PlayLinkServer.Connection connection)
-    {
-        Debug.Log($"{LOG_PREFIX} {connection.kind} client #{connection.id} connected from {connection.remote}");
-        if (connection.kind == PlayLinkServer.ChannelKind.Video)
-        {
-            pacingGraceSeconds = PACING_CONNECT_GRACE_SECONDS;
-            PlayLinkCapture.SeedClient(connection);
-        }
-
-        // 입력 연결 수는 자리 배정(PlayLinkSeats)이 셉니다: 대기 중인 클라이언트의 입력은 세지 않아야 해서 한 곳에서만 부릅니다.
-    }
-
-    private static void OnDisconnected(PlayLinkServer.Connection connection)
-    {
-        Debug.Log($"{LOG_PREFIX} {connection.kind} client #{connection.id} disconnected");
-    }
-
-    private static void OnBeforeAssemblyReload()
-    {
-        if (IsRunning && EditorApplication.isPlaying)
-        {
-            SessionState.SetBool(SESSION_RESTART_AFTER_RELOAD, true);
-        }
-
-        Stop();
-    }
-
-    private static void OnPlayModeStateChanged(PlayModeStateChange state)
-    {
-        if (state == PlayModeStateChange.ExitingPlayMode)
-        {
-            Stop();
-        }
-        else if (state == PlayModeStateChange.EnteredPlayMode && AutoStart)
-        {
-            Start();
-        }
-    }
-
     // 에디터 업데이트(일시정지 중에도 돎)에서 게임 화면이 멈췄는지 보고, 바뀔 때만 창/폰에 알립니다.
     private static void CheckStale()
     {
@@ -551,7 +440,7 @@ public static class PlayLink
         }
 
         StaleReason = reason;
-        server.PublishStatus(reason == null ? "{\"t\":\"s\",\"stale\":false}" : "{\"t\":\"s\",\"stale\":true,\"msg\":\"" + reason + "\"}");
+        peer.PublishStatus(reason == null ? "{\"t\":\"s\",\"stale\":false}" : "{\"t\":\"s\",\"stale\":true,\"msg\":\"" + reason + "\"}");
         if (reason != null)
         {
             Debug.LogWarning($"{LOG_PREFIX} {reason}");
@@ -560,49 +449,6 @@ public static class PlayLink
         {
             Debug.Log($"{LOG_PREFIX} game view rendering again");
         }
-    }
-
-    private static byte[] LoadPage()
-    {
-        foreach (string guid in AssetDatabase.FindAssets(PAGE_ASSET_NAME))
-        {
-            string path = AssetDatabase.GUIDToAssetPath(guid);
-            if (path.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
-            {
-                pagePath = Path.GetFullPath(path);
-                return File.ReadAllBytes(path);
-            }
-        }
-
-        return null;
-    }
-
-    // 서버 스레드: 페이지 파일을 다시 읽습니다(AssetDatabase는 메인 스레드 전용이라 Start 때 찾아 둔 경로를 씀). 실패하면 null
-    private static byte[] ReadPage()
-    {
-        try
-        {
-            return pagePath != null ? File.ReadAllBytes(pagePath) : null;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
-    // GET /debug?pattern=1|0 (서버 스레드): 테스트 패턴을 켜고 끕니다.
-    private static string HandleDebugRequest(string query)
-    {
-        if (query.Contains("pattern=1"))
-        {
-            PlayLinkCapture.TestPattern = true;
-        }
-        else if (query.Contains("pattern=0"))
-        {
-            PlayLinkCapture.TestPattern = false;
-        }
-
-        return "{\"pattern\":" + (PlayLinkCapture.TestPattern ? "true" : "false") + "}";
     }
 
     #region PlayerLoop
@@ -694,19 +540,6 @@ public static class PlayLink
 
     #region Stats
 
-    // GET /stats 응답(서버 스레드에서 호출): 창에 보이는 1초 통계 + 누적 카운터 + 최근 프레임 기록(PlayLinkTrace)
-    private static string BuildStatsJson()
-    {
-        string extra = "{\"codec\":\"" + PlayLinkCapture.CodecStatus.Replace("\\", "/").Replace("\"", "'") + "\""
-            + ",\"transportStride\":" + TransportStride
-            + ",\"captures\":" + PlayLinkCapture.Captures
-            + ",\"encoderDrops\":" + PlayLinkCapture.EncoderDrops
-            + ",\"inflightSkips\":" + PlayLinkCapture.InflightSkips
-            + ",\"noRenderCaptures\":" + PlayLinkCapture.NoRenderCaptures
-            + ",\"guardedFrames\":" + PlayLinkCapture.GuardedFrames + "}";
-        return PlayLinkTrace.BuildJson(JsonUtility.ToJson(snapshot), extra);
-    }
-
     private static void ResetStats()
     {
         snapshot = new Snapshot();
@@ -732,7 +565,7 @@ public static class PlayLink
 
     private static long[] ReadPacingCounters()
     {
-        PlayLinkServer target = server;
+        PlayLinkPeer target = peer;
         return new[]
         {
             PlayLinkCapture.Captures,

@@ -1,58 +1,11 @@
 package io.playlink.app
 
-import io.playlink.app.link.LinkParser
-import io.playlink.app.link.LinkResult
-import io.playlink.app.net.Auth
 import io.playlink.app.video.AvcConfig
 import io.playlink.app.video.FrameHeader
 import org.junit.Assert.*
 import org.junit.Test
 
 class CoreTest {
-    private val key = ByteArray(16) { it.toByte() }
-    private val cn = Auth.base64Url(ByteArray(16) { (0x10 + it).toByte() })
-    private val sn = Auth.base64Url(ByteArray(16) { (0x20 + it).toByte() })
-
-    // 설계 3.2 의 시험 벡터 4개
-    @Test fun authVectors() {
-        assertEquals("AAECAwQFBgcICQoLDA0ODw", Auth.base64Url(key))
-        assertEquals("EBESExQVFhcYGRobHB0eHw", cn)
-        assertEquals("ICEiIyQlJicoKSorLC0uLw", sn)
-        assertEquals("rASdAm0R4E9eOg8WrTdhWEl_tYFZPYQaTVDJQFcq7MI", Auth.proof(key, "srv", "video", "PLKTEST1", cn, sn))
-        assertEquals("Kum7Uc2NTxLHeflx39gkJOZfTH0T9JUHS--WvYy_kR8", Auth.proof(key, "cli", "video", "PLKTEST1", cn, sn))
-        assertEquals("L04dFts1PdX9hTbKhFnitvOCwRrHVJlvmdKtLpSdFms", Auth.proof(key, "srv", "input", "PLKTEST1", cn, sn))
-        assertEquals("5GsiBVEovxdUf6qehtU9FF2vtYkyHPwfOdV_X5P_Ijg", Auth.proof(key, "cli", "input", "PLKTEST1", cn, sn))
-        assertArrayEquals(key, Auth.base64UrlDecode("AAECAwQFBgcICQoLDA0ODw"))
-        assertTrue(Auth.isNonce(cn)); assertFalse(Auth.isNonce("short")); assertFalse(Auth.isNonce("EBESExQVFhcYGRobHB0e+w"))
-        val h = Auth.parseHeader("v=1; sn=$sn;mac=abc ; unknown=x")
-        assertEquals("1", h["v"]); assertEquals(sn, h["sn"]); assertEquals("abc", h["mac"])
-    }
-
-    @Test fun linkQrAndDeepLinkGiveSameResult() {
-        val qr = LinkParser.parse("http://192.168.25.5:7300/c#v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw&a=172.30.224.1,10.0.0.7", "playlink") as LinkResult.Ok
-        val dl = LinkParser.parse("playlink://192.168.25.5:7300/c?v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw&a=172.30.224.1,10.0.0.7", "playlink") as LinkResult.Ok
-        assertEquals(qr.link.sid, dl.link.sid); assertEquals(qr.link.token, dl.link.token); assertEquals(qr.link.hosts, dl.link.hosts); assertEquals(qr.link.port, dl.link.port)
-        assertEquals(listOf("192.168.25.5", "172.30.224.1", "10.0.0.7"), qr.link.hosts)
-        assertEquals(7300, qr.link.port); assertEquals("lan", qr.link.via); assertFalse(qr.link.take)
-        assertArrayEquals(key, qr.link.tokenBytes)
-    }
-
-    @Test fun linkVariants() {
-        val usb = LinkParser.parse("playlink://127.0.0.1:7311/c?v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw&take=1&pace=now&future=zzz", "playlink") as LinkResult.Ok
-        assertEquals("usb", usb.link.via); assertTrue(usb.link.take); assertEquals("now", usb.link.extras["pace"]); assertEquals("zzz", usb.link.extras["future"])
-        fun err(s: String?) = (LinkParser.parse(s, "playlink") as LinkResult.Error).code
-        assertEquals("update", err("http://192.168.25.5:7300/c#v=2&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw"))
-        assertEquals("unreadable", err("http://192.168.25.5:7300/c#v=1&s=PLKTEST2"))
-        assertEquals("unreadable", err("http://192.168.25.5:7300/c#v=1&s=plktest2&t=AAECAwQFBgcICQoLDA0ODw"))
-        assertEquals("unreadable", err("http://192.168.25.5:7300/c?v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw"))   // http 는 # 뒤만
-        assertEquals("unreadable", err("http://example.com:7300/c#v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw"))
-        assertEquals("notplaylink", err("https://192.168.25.5:7300/c#v=1&s=PLKTEST2&t=AAECAwQFBgcICQoLDA0ODw"))
-        assertEquals("notplaylink", err("http://192.168.25.5:7300/#v=1"))
-        assertEquals("notplaylink", err("hello"))
-        assertEquals("unreadable", err("http://192.168.25.5:7300/c#v=1&s=PLKTEST1&t=AAECAwQFBgcICQoLDA0ODw"))   // 1 은 base32 글자가 아님
-        assertEquals("unreadable", err(null))
-    }
-
     @Test fun avcConfigAndConversion() {
         val sps = byteArrayOf(0x67, 0x64, 0x00, 0x20, 0x11)
         val pps = byteArrayOf(0x68, 0x22, 0x33)

@@ -8,22 +8,17 @@ using UnityEngine;
 
 // PlayLink: QR 만들기와 그리기.
 // - 인터넷과 외부 서비스를 쓰지 않습니다. 인코더는 ThirdParty/QrCodeGenerator(MIT) 소스입니다.
-// - 내용은 설계 4.1절의 QR 형식 1: http://<주 주소>:<포트>/c#v=1&s=<서버 표시>&t=<토큰>[&a=<다른 주소>,…]
+// - 내용은 부르는 쪽이 정합니다: 페어링 QR(playlink://pair?…, PlayLinkProto.BuildQrText)과 앱 다운로드 주소.
 // - 바이트 모드, 오류 정정 M 이상(같은 크기에 들어가면 인코더가 더 높은 수준으로 올림), 둘레 여백 4모듈,
 //   모듈 하나는 정수 픽셀(4 이상), 필터 Point.
-// 이 파일은 서버 쪽(PlayLinkHost 등)에 기대지 않습니다. 문자열만 받아 그림을 만듭니다.
+// 이 파일은 연결 쪽(PlayLinkLink 등)에 기대지 않습니다. 문자열만 받아 그림을 만듭니다.
 public static class PlayLinkQr
 {
-    public const int QR_FORMAT_VERSION = 1;
-
     // QR 규격의 둘레 여백(quiet zone). 4모듈보다 좁으면 못 읽는 카메라가 있습니다.
     public const int QUIET_ZONE_MODULES = 4;
 
     // 모듈 하나의 최소 픽셀 수
     public const int MIN_PIXELS_PER_MODULE = 4;
-
-    // QR 형식 1의 `a=` 에 넣는 다른 주소의 최대 개수
-    public const int MAX_OTHER_ADDRESSES = 3;
 
     // 인코딩 결과 하나. modules[y, x] 가 true 면 검은 모듈이고 y = 0 이 맨 윗줄입니다.
     public sealed class Code
@@ -39,83 +34,6 @@ public static class PlayLinkQr
 
     private static readonly Color32 DARK = new Color32(0, 0, 0, 255);
     private static readonly Color32 LIGHT = new Color32(255, 255, 255, 255);
-
-    // 설계 4.1절의 QR 내용을 만듭니다. 형식이 맞지 않으면 null 을 돌려주고 error 에 이유를 넣습니다.
-    public static string BuildPayload(string host, int port, string serverId, string token, IList<string> otherAddresses, out string error)
-    {
-        error = null;
-        if (!IsIpv4(host))
-        {
-            error = "PC 주소가 올바르지 않습니다.";
-            return null;
-        }
-
-        if (port < 1 || port > 65535)
-        {
-            error = "포트가 올바르지 않습니다.";
-            return null;
-        }
-
-        if (!IsServerId(serverId))
-        {
-            error = "서버 표시가 올바르지 않습니다.";
-            return null;
-        }
-
-        if (!IsToken(token))
-        {
-            error = "토큰이 올바르지 않습니다.";
-            return null;
-        }
-
-        StringBuilder builder = new StringBuilder(128);
-        builder.Append("http://").Append(host).Append(':').Append(port).Append("/c#v=").Append(QR_FORMAT_VERSION)
-            .Append("&s=").Append(serverId).Append("&t=").Append(token);
-        int added = 0;
-        if (otherAddresses != null)
-        {
-            foreach (string other in otherAddresses)
-            {
-                if (added >= MAX_OTHER_ADDRESSES)
-                {
-                    break;
-                }
-
-                if (!IsIpv4(other) || other == host)
-                {
-                    continue;
-                }
-
-                builder.Append(added == 0 ? "&a=" : ",").Append(other);
-                added++;
-            }
-        }
-
-        return builder.ToString();
-    }
-
-    // 토큰을 가린 표시용 문자열(창, 콘솔, 문서에 토큰을 남기지 않기 위해).
-    public static string MaskToken(string payload)
-    {
-        if (string.IsNullOrEmpty(payload))
-        {
-            return string.Empty;
-        }
-
-        int start = payload.IndexOf("t=", StringComparison.Ordinal);
-        while (start > 0 && payload[start - 1] != '&' && payload[start - 1] != '#' && payload[start - 1] != '?')
-        {
-            start = payload.IndexOf("t=", start + 2, StringComparison.Ordinal);
-        }
-
-        if (start < 0)
-        {
-            return payload;
-        }
-
-        int end = payload.IndexOf('&', start);
-        return payload.Substring(0, start + 2) + "…" + (end < 0 ? string.Empty : payload.Substring(end));
-    }
 
     // 글자를 UTF-8 바이트로 바꿔 바이트 모드로 인코딩합니다.
     public static Code Encode(string text)
@@ -242,84 +160,6 @@ public static class PlayLinkQr
         File.WriteAllBytes(path, texture.EncodeToPNG());
     }
 
-    public static bool IsIpv4(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return false;
-        }
-
-        string[] parts = value.Split('.');
-        if (parts.Length != 4)
-        {
-            return false;
-        }
-
-        foreach (string part in parts)
-        {
-            if (part.Length < 1 || part.Length > 3)
-            {
-                return false;
-            }
-
-            int number = 0;
-            foreach (char c in part)
-            {
-                if (c < '0' || c > '9')
-                {
-                    return false;
-                }
-
-                number = number * 10 + (c - '0');
-            }
-
-            if (number > 255 || (part.Length > 1 && part[0] == '0'))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    // 서버 표시: 8자. 실제 값은 base32([A-Z2-7])이지만 설계의 시험 벡터(PLKTEST1)에 맞춰 대문자와 숫자를 모두 받습니다.
-    public static bool IsServerId(string value)
-    {
-        if (value == null || value.Length != 8)
-        {
-            return false;
-        }
-
-        foreach (char c in value)
-        {
-            if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    // 토큰: base64url 22자(16바이트, 패딩 없음)
-    public static bool IsToken(string value)
-    {
-        if (value == null || value.Length != 22)
-        {
-            return false;
-        }
-
-        foreach (char c in value)
-        {
-            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     private static string EccName(QrCode.Ecc ecc)
     {
         if (ecc == QrCode.Ecc.Low)
@@ -346,7 +186,7 @@ public static class PlayLinkQr
     // 버전 1 ~ 10 의 바이트 모드 용량(오류 정정 M). 규격 표의 값.
     private static readonly int[] BYTE_CAPACITY_M = { 14, 26, 42, 62, 84, 106, 122, 152, 180, 213 };
 
-    // 설계 4.1절의 예(81자). 버전 5-M, 독립 구현(Python segno)으로 만든 행렬과 모듈 단위로 같은지 본 값입니다.
+    // 시험용 글자(81자, 고정 시험 값). 버전 5-M, 독립 구현(Python segno)으로 만든 행렬과 모듈 단위로 같은지 본 값입니다.
     public const string DESIGN_EXAMPLE = "http://192.168.25.5:7300/c#v=1&s=PLKTEST1&t=AAECAwQFBgcICQoLDA0ODw&a=172.30.224.1";
 
     [MenuItem("Tools/PlayLink/QR Self Test", false, 41)]
@@ -391,9 +231,9 @@ public static class PlayLinkQr
             ok &= Check(log, $"바이트 모드 용량 경계 버전 {version}-M = {capacity}바이트", limitOk);
         }
 
-        // 4. 설계의 예: 81바이트, 버전 5, 37x37
+        // 4. 시험용 글자: 81바이트, 버전 5, 37x37
         Code example = Encode(DESIGN_EXAMPLE);
-        ok &= Check(log, "설계 예제 81바이트 → 버전 5(37x37)", example.byteCount == 81 && example.version == 5 && example.size == 37);
+        ok &= Check(log, "시험용 글자 81바이트 → 버전 5(37x37)", example.byteCount == 81 && example.version == 5 && example.size == 37);
 
         // 5. 구조: 위치 찾기 무늬 3개, 타이밍 무늬, 항상 검은 모듈, 형식 정보(오류 정정 수준과 마스크)
         foreach (string text in new[] { "a", DESIGN_EXAMPLE, new string('z', 120), new string('q', 300) })
@@ -449,23 +289,6 @@ public static class PlayLinkQr
 
             UnityEngine.Object.DestroyImmediate(texture);
             ok &= Check(log, "텍스처 방향(위아래)과 Point 필터", orientation);
-        }
-
-        // 7. 내용 만들기
-        {
-            string error;
-            string payload = BuildPayload("192.168.25.5", 7300, "PLKTEST1", "AAECAwQFBgcICQoLDA0ODw", new[] { "172.30.224.1" }, out error);
-            ok &= Check(log, "QR 내용이 설계 4.1절의 예와 같음", payload == DESIGN_EXAMPLE);
-            ok &= Check(log, "주소가 하나뿐이면 a= 를 생략", BuildPayload("10.0.0.2", 7300, "PLKTEST1", "AAECAwQFBgcICQoLDA0ODw", null, out error) == "http://10.0.0.2:7300/c#v=1&s=PLKTEST1&t=AAECAwQFBgcICQoLDA0ODw");
-            ok &= Check(log, "다른 주소는 3개까지, 주 주소와 같은 것은 뺌",
-                BuildPayload("192.168.100.100", 65535, "PLKTEST1", "AAECAwQFBgcICQoLDA0ODw", new[] { "192.168.100.100", "172.16.100.100", "10.100.100.100", "192.168.200.200", "192.168.1.1" }, out error)
-                == "http://192.168.100.100:65535/c#v=1&s=PLKTEST1&t=AAECAwQFBgcICQoLDA0ODw&a=172.16.100.100,10.100.100.100,192.168.200.200");
-            ok &= Check(log, "잘못된 값은 거절", BuildPayload("my-pc", 7300, "PLKTEST1", "AAECAwQFBgcICQoLDA0ODw", null, out error) == null
-                && BuildPayload("192.168.0.2", 7300, "plktest1", "AAECAwQFBgcICQoLDA0ODw", null, out error) == null
-                && BuildPayload("192.168.0.2", 7300, "PLKTEST1", "short", null, out error) == null
-                && BuildPayload("192.168.0.2", 0, "PLKTEST1", "AAECAwQFBgcICQoLDA0ODw", null, out error) == null);
-            ok &= Check(log, "토큰 가리기", MaskToken(DESIGN_EXAMPLE) == "http://192.168.25.5:7300/c#v=1&s=PLKTEST1&t=…&a=172.30.224.1"
-                && MaskToken("http://10.0.0.2:7300/c#v=1&s=PLKTEST1&t=AAECAwQFBgcICQoLDA0ODw") == "http://10.0.0.2:7300/c#v=1&s=PLKTEST1&t=…");
         }
 
         report = log.ToString();

@@ -5,11 +5,14 @@ using System.IO;
 using System.Text;
 using System.Threading;
 
-// ffmpeg(h264_nvenc) 외부 프로세스로 Game 뷰 프레임을 H.264로 인코딩합니다(무선 adb처럼 대역폭이 좁은 경로용, MJPEG의 약 1/5~1/20).
+// ffmpeg 외부 프로세스로 Game 뷰 프레임을 H.264로 인코딩합니다(MJPEG의 약 1/5~1/20).
+// 인코더는 NVIDIA(h264_nvenc) → AMD(h264_amf) → Intel(h264_qsv) → CPU(libx264) 순으로 "작은 시험 인코딩이 실제로 되는" 첫 번째를 고릅니다
+// (PickEncoder, 결과는 ffmpeg 경로별로 기억). 창의 설정에서 하나로 고정할 수도 있습니다.
 // 입력: stdin으로 RGBA 원본 프레임(GPU에서 이미 뒤집고 줄인 것). 출력: stdout FLV. FLV 태그는 길이가 앞에 있어서 프레임 하나가 끝나는 즉시
-// 잘라 낼 수 있고(Annex-B처럼 다음 시작 코드를 기다리지 않음), 첫 태그는 폰 WebCodecs 설정에 그대로 쓰는 avcC(AVCDecoderConfigurationRecord)입니다.
-// 설정: B프레임 없음, 초저지연(-tune ull, -zerolatency), CBR. 실측(RTX 4060, 720x1280): 프레임 입력 → 출력 p50 3.0ms, p95 3.5ms, 시작 약 0.3초.
-// 입력 1장 = 출력 1장(재정렬 없음)이라 프레임 정보(입력 번호, 캡처 시각)는 넣은 순서대로 꺼내 짝을 맞춥니다.
+// 잘라 낼 수 있고(Annex-B처럼 다음 시작 코드를 기다리지 않음), 첫 태그는 폰 디코더 설정에 그대로 쓰는 avcC(AVCDecoderConfigurationRecord)입니다.
+// 어느 인코더든 폰이 받는 것은 같습니다: B프레임 없음, 저지연 설정, 고정 비트레이트, High 프로파일, avcC 1번 + AVCC 프레임(입력 1장 = 출력 1장).
+// 실측(RTX 4060, h264_nvenc, 720x1280): 프레임 입력 → 출력 p50 3.0ms, p95 3.5ms, 시작 약 0.3초.
+// 프레임 정보(입력 번호, 캡처 시각)는 넣은 순서대로 꺼내 짝을 맞춥니다.
 public sealed class PlayLinkH264 : IDisposable
 {
     // 키프레임 간격(프레임). 새 클라이언트나 디코딩 오류 때는 인코더를 다시 시작해 바로 키프레임을 만듭니다.
@@ -19,6 +22,15 @@ public sealed class PlayLinkH264 : IDisposable
     private const int FLV_VIDEO_TAG = 9;
     // VIDEODATA 앞부분: frameType/codec 1 + AVCPacketType 1 + compositionTime 3
     private const int AVC_PACKET_PREFIX = 5;
+
+    // 자동 선택 순서
+    public static readonly string[] ENCODERS = { "h264_nvenc", "h264_amf", "h264_qsv", "libx264" };
+    private static readonly string[] ENCODER_LABELS = { "NVIDIA", "AMD", "Intel", "CPU" };
+    private const int PROBE_WIDTH = 640;
+    private const int PROBE_HEIGHT = 360;
+    private const int PROBE_FRAMES = 3;
+    private const int PROBE_TIMEOUT_MS = 8000;
+    private static readonly object probeLock = new object();
 
     // 인코딩을 기다리는 프레임 정보(넣은 순서)
     public struct FrameInfo
@@ -35,6 +47,7 @@ public sealed class PlayLinkH264 : IDisposable
 
     public int Width { get; private set; }
     public int Height { get; private set; }
+    public string EncoderName { get; private set; }
     public bool HasExited { get { return process == null || process.HasExited; } }
     public string LastError { get { return lastError; } }
 
@@ -82,18 +95,182 @@ public sealed class PlayLinkH264 : IDisposable
         return null;
     }
 
+    // 창에 보이는 이름(NVIDIA / AMD / Intel / CPU)
+    public static string EncoderLabel(string encoder)
+    {
+        int index = Array.IndexOf(ENCODERS, encoder);
+        return index >= 0 ? ENCODER_LABELS[index] : encoder;
+    }
+
+    // 쓸 인코더를 고릅니다(인코더 스레드). forced 가 있으면 그것, 없으면 순서대로 시험해 되는 첫 번째. 하나도 안 되면 null + error.
+    // 자동 선택 결과는 ffmpeg 경로별로 기억합니다(PlayLink.EncoderProbe). 시험은 인코더마다 0.3~1초쯤 걸립니다.
+    public static string PickEncoder(string ffmpegPath, string forced, out string error)
+    {
+        error = null;
+        if (!string.IsNullOrEmpty(forced))
+        {
+            if (Array.IndexOf(ENCODERS, forced) < 0)
+            {
+                error = "모르는 인코더: " + forced;
+                return null;
+            }
+
+            return forced;
+        }
+
+        lock (probeLock)
+        {
+            string cached = PlayLink.EncoderProbe;
+            string prefix = ffmpegPath + "|";
+            if (cached != null && cached.StartsWith(prefix, StringComparison.Ordinal) && Array.IndexOf(ENCODERS, cached.Substring(prefix.Length)) >= 0)
+            {
+                return cached.Substring(prefix.Length);
+            }
+
+            StringBuilder failures = new StringBuilder();
+            foreach (string encoder in ENCODERS)
+            {
+                if (Probe(ffmpegPath, encoder, out string reason))
+                {
+                    PlayLink.EncoderProbe = prefix + encoder;
+                    return encoder;
+                }
+
+                failures.Append(EncoderLabel(encoder)).Append(": ").Append(reason).Append(" / ");
+            }
+
+            error = "쓸 수 있는 H.264 인코더가 없습니다(" + failures.ToString().TrimEnd(' ', '/') + ")";
+            return null;
+        }
+    }
+
+    // 작은 화면 몇 장을 실제로 인코딩해 봅니다. 끝까지 되고 출력이 나오면 true.
+    public static bool Probe(string ffmpegPath, string encoder, out string reason)
+    {
+        reason = null;
+        try
+        {
+            ProcessStartInfo info = new ProcessStartInfo(ffmpegPath, BuildArgs(encoder, PROBE_WIDTH, PROBE_HEIGHT, 2000))
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using (Process probe = Process.Start(info))
+            {
+                System.Threading.Tasks.Task<string> errors = probe.StandardError.ReadToEndAsync();
+                System.Threading.Tasks.Task<int> produced = System.Threading.Tasks.Task.Run(() => CountBytes(probe.StandardOutput.BaseStream));
+                try
+                {
+                    byte[] frame = new byte[PROBE_WIDTH * PROBE_HEIGHT * 4];
+                    Stream input = probe.StandardInput.BaseStream;
+                    for (int i = 0; i < PROBE_FRAMES; i++)
+                    {
+                        // 장마다 조금 다른 화면을 넣습니다.
+                        for (int j = i; j < frame.Length; j += 97)
+                        {
+                            frame[j] = (byte)(j + i * 40);
+                        }
+
+                        input.Write(frame, 0, frame.Length);
+                    }
+
+                    input.Close();
+                }
+                catch (Exception)
+                {
+                    // 인코더를 열지 못하면 ffmpeg 가 먼저 끝나 파이프가 닫힙니다: 아래의 종료 코드로 판단합니다.
+                }
+
+                if (!probe.WaitForExit(PROBE_TIMEOUT_MS))
+                {
+                    probe.Kill();
+                    reason = "시간 초과";
+                    return false;
+                }
+
+                if (probe.ExitCode == 0 && produced.Wait(1000) && produced.Result > FLV_HEADER_BYTES + FLV_TAG_HEADER_BYTES)
+                {
+                    return true;
+                }
+
+                string text = errors.Wait(1000) ? errors.Result.Trim() : string.Empty;
+                int newline = text.LastIndexOf('\n');
+                reason = text.Length == 0 ? "출력 없음" : (newline >= 0 ? text.Substring(newline + 1) : text).Trim();
+                if (reason.Length > 160)
+                {
+                    reason = reason.Substring(0, 160);
+                }
+
+                return false;
+            }
+        }
+        catch (Exception e)
+        {
+            reason = e.Message;
+            return false;
+        }
+    }
+
+    private static int CountBytes(Stream stream)
+    {
+        byte[] sink = new byte[16 * 1024];
+        int total = 0;
+        try
+        {
+            int read;
+            while ((read = stream.Read(sink, 0, sink.Length)) > 0)
+            {
+                total += read;
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return total;
+    }
+
+    // ffmpeg 인자. 인코더가 달라도 나오는 흐름의 성질은 같게 둡니다: B프레임 없음, 저지연, 고정 비트레이트, 같은 키프레임 간격, High 프로파일, FLV.
+    private static string BuildArgs(string encoder, int width, int height, int bitrateKbps)
+    {
+        // bufsize를 프레임 2장 분량으로 작게 잡아 비트레이트가 순간적으로 튀지 않게 합니다(전송 큐가 쌓이지 않게).
+        int bufsizeKbits = Math.Max(100, bitrateKbps / 30);
+        string rate = $"-g {GOP_FRAMES} -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bufsizeKbits}k -profile:v high ";
+        // 4:2:0 으로 바꿔 넣는 인코더는 가로세로가 짝수여야 해서 홀수면 1픽셀을 잘라 냅니다(헤더의 크기는 원본 그대로라 1픽셀 다를 수 있음).
+        const string even = "-vf crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0 ";
+        string codec;
+        switch (encoder)
+        {
+            case "h264_amf":
+                codec = even + "-pix_fmt nv12 -c:v h264_amf -usage ultralowlatency -quality speed -bf 0 -rc cbr " + rate;
+                break;
+            case "h264_qsv":
+                codec = even + "-pix_fmt nv12 -c:v h264_qsv -preset veryfast -async_depth 1 -look_ahead 0 -bf 0 " + rate;
+                break;
+            case "libx264":
+                codec = even + "-pix_fmt yuv420p -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 " + rate;
+                break;
+            default:
+                codec = "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -delay 0 -bf 0 -rc cbr " + rate;
+                break;
+        }
+
+        return "-hide_banner -loglevel error -f rawvideo -pix_fmt rgba "
+            + $"-s {width}x{height} -framerate 60 -i pipe:0 "
+            + codec
+            + "-flush_packets 1 -flvflags no_duration_filesize -f flv pipe:1";
+    }
+
     // 인코더 프로세스를 시작합니다(인코더 스레드). 실패하면 false + LastError
-    public bool Start(string ffmpegPath, int width, int height, int bitrateKbps)
+    public bool Start(string ffmpegPath, string encoder, int width, int height, int bitrateKbps)
     {
         Width = width;
         Height = height;
-        // bufsize를 프레임 2장 분량으로 작게 잡아 비트레이트가 순간적으로 튀지 않게 합니다(전송 큐가 쌓이지 않게).
-        int bufsizeKbits = Math.Max(100, bitrateKbps / 30);
-        string args = "-hide_banner -loglevel error -f rawvideo -pix_fmt rgba "
-            + $"-s {width}x{height} -framerate 60 -i pipe:0 "
-            + "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -delay 0 -bf 0 "
-            + $"-g {GOP_FRAMES} -rc cbr -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bufsizeKbits}k -profile:v high "
-            + "-flush_packets 1 -flvflags no_duration_filesize -f flv pipe:1";
+        EncoderName = encoder;
+        string args = BuildArgs(encoder, width, height, bitrateKbps);
         try
         {
             ProcessStartInfo info = new ProcessStartInfo(ffmpegPath, args)

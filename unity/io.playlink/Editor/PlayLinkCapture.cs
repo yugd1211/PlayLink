@@ -19,14 +19,14 @@ using UnityEngine.Rendering;
 // 프레임 메시지 = 헤더 28바이트(little-endian) + JPEG (프로토콜 2: 24 → 28바이트, 캡처 시각 추가)
 //   0 u32 frameId | 4 u16 width | 6 u16 height | 8 i32 inputSeq(이 화면에 반영된 마지막 입력 번호)
 //   12 u32 encodeUs | 16 u32 captureToEncodedUs | 20 u32 flags
-//   24 u32 captureTime(서버 시작 뒤 흐른 시간, 0.1ms 단위. 폰 페이지가 이 시각표에 맞춰 고르게 표시하는 데 씀)
+//   24 u32 captureTime(전송 시작 뒤 흐른 시간, 0.1ms 단위. 폰이 이 시각표에 맞춰 고르게 표시하는 데 씀)
 //   flags: 1 = 이전 프레임과 같은 화면 재전송(JPEG), 2 = H.264, 4 = 키프레임, 8 = H.264 설정(avcC, 프레임 아님)
-// H.264: 영상 클라이언트가 1개이고 그 페이지가 WebCodecs로 디코딩할 수 있으면 ffmpeg(h264_nvenc)로 보냅니다(PlayLinkH264).
+// H.264: 앱이 H.264 를 디코딩할 수 있다고 알리면 ffmpeg 로 인코딩해 보냅니다(PlayLinkH264. 인코더는 NVIDIA → AMD → Intel → CPU 순으로 자동 선택).
 // 프레임이 앞 프레임에 기대므로 인코딩한 뒤에는 버리지 않고(서버 순서 큐), 밀리면 인코딩 전에 건너뜁니다. 안 되면 MJPEG로 돌아갑니다.
 public static class PlayLinkCapture
 {
     public const int HEADER_BYTES = 28;
-    // 프레임 헤더/메시지 형식 번호. 페이지(PlayLinkPage.html의 PROTOCOL_VERSION)와 같아야 하고, 다르면 페이지가 스스로 새로 고칩니다.
+    // 프레임 헤더/메시지 형식 번호(키 교환의 fin 과 영상 연결의 hello 에 실림). 앱의 번호와 같아야 합니다.
     public const int PROTOCOL_VERSION = 2;
     private const uint FLAG_IDENTICAL = 1;
     private const uint FLAG_H264 = 2;
@@ -34,7 +34,7 @@ public static class PlayLinkCapture
     private const uint FLAG_CONFIG = 8;
     // H.264에서 가장 오래된 미확인(또는 아직 못 보낸) 프레임이 이 시간(ms)만큼 밀려 있으면 다음 프레임은 인코딩하지 않고 건너뜁니다(지연이 쌓이지 않게).
     // 서버가 더 보내지 않는 기준과 같게 둡니다.
-    private const int MAX_H264_BACKLOG_MS = PlayLinkServer.MAX_H264_BACKLOG_MS;
+    private const int MAX_H264_BACKLOG_MS = PlayLinkPeer.MAX_H264_BACKLOG_MS;
     // 화면이 안 바뀌어도 이 간격으로는 다시 보냅니다(유휴 하한 5fps).
     private const double IDLE_INTERVAL_MS = 200.0;
     private const int MAX_READBACKS_IN_FLIGHT = 3;
@@ -81,7 +81,7 @@ public static class PlayLinkCapture
     private static readonly PropertyInfo actualViewProperty = typeof(EditorWindow).Assembly.GetType("UnityEditor.HostView")
         ?.GetProperty("actualView", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
 
-    private static PlayLinkServer server;
+    private static PlayLinkPeer server;
     private static RenderTexture flipTexture;
     private static UnityEngine.Object cachedGameView;
     private static readonly List<AsyncGPUReadbackRequest> pendingRequests = new List<AsyncGPUReadbackRequest>();
@@ -97,11 +97,11 @@ public static class PlayLinkCapture
     private static Thread encoderThread;
     private static AutoResetEvent encoderWake;
     private static volatile bool encoderRunning;
-    private static volatile PlayLinkServer.VideoMessage lastMessage;
+    private static volatile PlayLinkPeer.VideoMessage lastMessage;
     private static int frameId;
     // H.264 인코더(인코더 스레드가 만들고 닫음)와 그 스트림을 받는 클라이언트
     private static PlayLinkH264 h264;
-    private static PlayLinkServer.Connection h264Client;
+    private static PlayLinkPeer.Connection h264Client;
     private static int h264Kbps;
     private static volatile bool h264Failed;
     private static volatile string h264Error;
@@ -178,7 +178,7 @@ public static class PlayLinkCapture
 
     private static bool NeedsFlip { get { return SystemInfo.graphicsUVStartsAtTop != h264Active; } }
 
-    public static void Start(PlayLinkServer target)
+    public static void Start(PlayLinkPeer target)
     {
         server = target;
         session++;
@@ -252,15 +252,6 @@ public static class PlayLinkCapture
         h264Failed = false;
     }
 
-    public static void SeedClient(PlayLinkServer.Connection connection)
-    {
-        PlayLinkServer target = server;
-        if (target != null)
-        {
-            target.Seed(connection, lastMessage);
-        }
-    }
-
     // PlayerLoop(메인 스레드)에서 매 프레임 호출. 이 시점의 Game 뷰 화면은 직전 프레임 렌더 결과입니다.
     // ScreenCapture.CaptureScreenshotIntoRenderTexture는 프레임 끝(WaitForEndOfFrame)이 아니면 에디터 창 백버퍼(Game 뷰 툴바 포함)를
     // 잡아서 쓰지 않습니다. 대신 Game 뷰가 게임을 그려 둔 렌더 타깃을 그대로 읽습니다(Game 뷰 배율/여백과 무관한 원본 해상도).
@@ -277,7 +268,7 @@ public static class PlayLinkCapture
     // 이번 프레임 캡처를 요청합니다. 반환값은 PlayLinkTrace.CAPTURE_*(요청함 / 건너뛴 이유)
     private static int RequestCapture()
     {
-        if (server == null || server.CountConnections(PlayLinkServer.ChannelKind.Video) == 0)
+        if (server == null || server.CountConnections(PlayLinkPeer.ChannelKind.Video) == 0)
         {
             return PlayLinkTrace.CAPTURE_NONE;
         }
@@ -646,8 +637,8 @@ public static class PlayLinkCapture
                 }
 
                 ulong hash = HashPixels(frame.pixels);
-                PlayLinkServer publisher = server;
-                PlayLinkServer.Connection h264Target = publisher != null && PlayLink.UseH264 && !h264Failed ? publisher.SingleH264Client() : null;
+                PlayLinkPeer publisher = server;
+                PlayLinkPeer.Connection h264Target = publisher != null && PlayLink.UseH264 && !h264Failed ? publisher.H264Client() : null;
                 if (h264Target == null && h264 != null)
                 {
                     StopH264();
@@ -685,7 +676,7 @@ public static class PlayLinkCapture
                 }
 
                 codecStatus = h264Failed ? $"MJPEG (H.264 실패: {h264Error})"
-                    : PlayLink.UseH264 ? "MJPEG (페이지가 H.264를 지원하지 않거나 영상 클라이언트가 여러 개)" : "MJPEG";
+                    : PlayLink.UseH264 ? "MJPEG (앱이 H.264 를 지원한다고 알리지 않음)" : "MJPEG";
                 bool identical = hash == lastHash && frame.width == lastWidth && frame.height == lastHeight && lastMessage != null;
                 if (identical && PlayLink.ElapsedMs(lastSentTicks) < IDLE_INTERVAL_MS)
                 {
@@ -711,7 +702,7 @@ public static class PlayLinkCapture
                 LastWidth = frame.width;
                 LastHeight = frame.height;
 
-                PlayLinkServer.VideoMessage message = new PlayLinkServer.VideoMessage { header = header, jpeg = jpeg, captureTicks = frame.captureTicks, frameId = Volatile.Read(ref frameId) };
+                PlayLinkPeer.VideoMessage message = new PlayLinkPeer.VideoMessage { header = header, jpeg = jpeg, captureTicks = frame.captureTicks, frameId = Volatile.Read(ref frameId) };
                 lastMessage = message;
                 lastSentBlack = frame.black;
                 PlayLinkTrace.NoteEncode(frame.captureFrame, PlayLinkTrace.ENCODE_JPEG);
@@ -828,7 +819,7 @@ public static class PlayLinkCapture
 
     // H.264로 1장 보냅니다(인코더 스레드). 인코더가 없거나, 받는 클라이언트·크기·비트레이트가 바뀌었거나, 키프레임 요청이 오면 다시 시작합니다
     // (시작 직후 설정 + 키프레임이 나옴). 보낼 프레임이 밀려 있으면 인코딩하지 않고 건너뜁니다. 쓸 수 없으면 false(MJPEG로 보냄).
-    private static bool EncodeH264(PlayLinkServer publisher, PlayLinkServer.Connection client, RawFrame frame)
+    private static bool EncodeH264(PlayLinkPeer publisher, PlayLinkPeer.Connection client, RawFrame frame)
     {
         if (h264 != null && h264.HasExited)
         {
@@ -847,10 +838,18 @@ public static class PlayLinkCapture
                 return false;
             }
 
+            // 처음 한 번은 인코더를 고르느라(시험 인코딩) 1초쯤 걸릴 수 있습니다.
+            string encoderName = PlayLinkH264.PickEncoder(ffmpeg, PlayLink.EncoderChoice, out string pickError);
+            if (encoderName == null)
+            {
+                FailH264(pickError);
+                return false;
+            }
+
             PlayLinkH264 encoder = new PlayLinkH264();
             encoder.onOutput = (payload, key, config, info) => OnH264Output(encoder, payload, key, config, info);
             int kbps = PlayLink.H264Kbps;
-            if (!encoder.Start(ffmpeg, frame.width, frame.height, kbps))
+            if (!encoder.Start(ffmpeg, encoderName, frame.width, frame.height, kbps))
             {
                 FailH264(encoder.LastError);
                 encoder.Dispose();
@@ -861,7 +860,7 @@ public static class PlayLinkCapture
             h264Client = client;
             h264Active = true;
             h264Kbps = kbps;
-            codecStatus = $"H.264 (NVENC) {kbps / 1000f:0.0} Mbps, {frame.width}x{frame.height}";
+            codecStatus = $"H.264 ({PlayLinkH264.EncoderLabel(encoderName)}, {encoderName}) {kbps / 1000f:0.0} Mbps, {frame.width}x{frame.height}";
             UnityEngine.Debug.Log($"{PlayLink.LOG_PREFIX} H.264 encoder started: {codecStatus}{(keyframe ? " (keyframe requested)" : string.Empty)}, {ffmpeg}");
         }
 
@@ -894,8 +893,8 @@ public static class PlayLinkCapture
     // ffmpeg 출력 1개(리더 스레드). 지금 인코더의 것이 아니면(다시 시작 전 것) 버립니다.
     private static void OnH264Output(PlayLinkH264 encoder, byte[] payload, bool key, bool config, PlayLinkH264.FrameInfo info)
     {
-        PlayLinkServer publisher = server;
-        PlayLinkServer.Connection client = h264Client;
+        PlayLinkPeer publisher = server;
+        PlayLinkPeer.Connection client = h264Client;
         if (encoder != h264 || publisher == null || client == null)
         {
             return;
@@ -911,7 +910,7 @@ public static class PlayLinkCapture
             PlayLink.RecordEncode(encodeMs, false);
         }
 
-        publisher.PublishOrdered(client, new PlayLinkServer.VideoMessage { header = header, jpeg = payload, captureTicks = captureTicks, frameId = id });
+        publisher.PublishOrdered(client, new PlayLinkPeer.VideoMessage { header = header, jpeg = payload, captureTicks = captureTicks, frameId = id });
     }
 
     private static void FailH264(string reason)

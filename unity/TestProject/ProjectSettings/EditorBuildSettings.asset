@@ -4,5 +4,8 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/PlayLinkDemo.unity
+    guid: 3825c14a40333df4dbf8db7a0d66991e
   m_configObjects: {}

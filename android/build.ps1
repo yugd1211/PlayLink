@@ -1,12 +1,9 @@
 # PlayLink 앱 빌드(Windows PowerShell). Unity 에디터의 Android 모듈에 든 JDK 17 + Gradle 런처를 씁니다(따로 내려받는 도구 없음).
 # 사용: .\build.ps1                → proto 빌드(배포·측정용, 디버그 불가, 진단 켬) + 단위 시험 + dist\ 로 복사
-#       .\build.ps1 -Publish       → 위에 더해 Unity 도구의 App~ 폴더로 복사(tools\publish-to-unity.ps1)
 #       .\build.ps1 assembleDebug  → 인자를 그대로 gradle 에 넘김
 # 버전은 app\build.gradle.kts 의 appVersionCode / appVersionName 한 곳에서 읽습니다.
 $ErrorActionPreference = 'Stop'
-$publish = $false
-$gradleArgs = @()
-foreach ($a in $args) { if ($a -eq '-Publish') { $publish = $true } else { $gradleArgs += $a } }
+$gradleArgs = @($args)
 # 도구 위치: 환경 변수 PLAYLINK_JDK(JDK 17 폴더), PLAYLINK_GRADLE_JAR(gradle-launcher jar), PLAYLINK_SDK(Android SDK 폴더)로 정합니다.
 # 없으면 Unity Hub 로 설치한 에디터 가운데 Android 모듈(JDK + Gradle 8.13 이상)이 든 가장 새 것을 찾아 씁니다.
 $U = $null; $found = $null
@@ -40,8 +37,7 @@ if (-not $custom) {
   Copy-Item $apk "$dist\$file" -Force
   $f = Get-Item "$dist\$file"
   $sha = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
-  $json = '{"package":"io.playlink.app","versionName":"' + $name + '","versionCode":' + $code + ',"build":"proto","proto":2,"auth":1,"minSdk":26,"file":"' + $file + '","size":' + $f.Length + ',"sha256":"' + $sha + '"}'
+  $json = '{"package":"io.playlink.app","versionName":"' + $name + '","versionCode":' + $code + ',"build":"proto","proto":2,"link":1,"minSdk":26,"file":"' + $file + '","size":' + $f.Length + ',"sha256":"' + $sha + '"}'
   [IO.File]::WriteAllText("$dist\app.json", $json)
   Write-Host "dist\$file  $($f.Length) bytes  sha256 $sha"
-  if ($publish) { & (Join-Path $PSScriptRoot '..\tools\publish-to-unity.ps1') }
 }

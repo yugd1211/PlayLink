@@ -1,21 +1,19 @@
 package io.playlink.app.net
 
-import java.io.BufferedInputStream
 import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.Socket
-import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * java.net.Socket 위의 최소 WebSocket 클라이언트(설계 3.1). Android UI 를 모릅니다.
+ * 바이트 흐름 위의 최소 WebSocket 프레임 읽기/쓰기, 클라이언트 역할(마스크해서 보내고 마스크 없는 프레임을 받음). Android UI 를 모릅니다.
+ * HTTP 업그레이드는 없습니다: 핸드셰이크가 끝난 암호화 흐름(proto.RecordReader / RecordWriter) 위에 프레임이 바로 흐릅니다(PROTOCOL.md 4장).
  * - 보내는 메시지 1개 = OutputStream.write 1번(00 문서 L1: 나눠 쓰면 adb 구간에서 40ms 씩 묶임).
  * - 읽기는 스레드 하나만, 쓰기는 writeLock 으로 메시지 단위 직렬화.
+ * closer 는 아래 소켓을 닫고, timeout 은 읽기 제한 시간(ms, 0 = 없음)을 바꿉니다.
  */
-class WsClient(val socket: Socket) {
-    class HttpResponse(val status: Int, val headers: Map<String, String>, val body: String)
+class WsClient(private val input: InputStream, private val output: OutputStream, private val closer: () -> Unit, private val timeout: (Int) -> Unit = {}) {
 
     companion object {
         const val OP_TEXT = 1
@@ -23,12 +21,9 @@ class WsClient(val socket: Socket) {
         const val OP_CLOSE = 8
         const val OP_PING = 9
         const val OP_PONG = 10
-        private const val GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
         private val random = SecureRandom()
     }
 
-    private val input: InputStream = BufferedInputStream(socket.getInputStream(), 65536)
-    private val output: OutputStream = socket.getOutputStream()
     private val writeLock = Any()
     private val sendBuf = ByteArray(6 + 125)
     private val head = ByteArray(8)
@@ -37,58 +32,6 @@ class WsClient(val socket: Socket) {
     var payload = ByteArray(65536); private set
     var length = 0; private set
     var closeCode = 0; private set
-
-    /**
-     * 업그레이드 요청을 write 1번으로 보내고 응답 헤더를 읽습니다. 101 이면 Sec-WebSocket-Accept 를 검증합니다.
-     * 101 이 아니면 본문(Content-Length 만큼)까지 읽어 돌려줍니다.
-     */
-    fun upgrade(hostHeader: String, path: String, authHeader: String?): HttpResponse {
-        val keyBytes = ByteArray(16).also { random.nextBytes(it) }
-        val key = java.util.Base64.getEncoder().encodeToString(keyBytes)
-        val sb = StringBuilder(256)
-        sb.append("GET ").append(path).append(" HTTP/1.1\r\n")
-        sb.append("Host: ").append(hostHeader).append("\r\n")
-        sb.append("Upgrade: websocket\r\nConnection: Upgrade\r\n")
-        sb.append("Sec-WebSocket-Key: ").append(key).append("\r\n")
-        sb.append("Sec-WebSocket-Version: 13\r\n")
-        if (authHeader != null) sb.append("X-PlayLink-Auth: ").append(authHeader).append("\r\n")
-        sb.append("\r\n")
-        output.write(sb.toString().toByteArray(Charsets.US_ASCII))
-
-        val statusLine = readLine() ?: throw EOFException("no response")
-        val parts = statusLine.split(' ')
-        val status = parts.getOrNull(1)?.toIntOrNull() ?: throw IOException("bad status line")
-        val headers = HashMap<String, String>()
-        var lines = 0
-        while (true) {
-            val line = readLine() ?: throw EOFException("eof in headers")
-            if (line.isEmpty()) break
-            if (++lines > 64) throw IOException("too many header lines")
-            val colon = line.indexOf(':')
-            if (colon > 0) headers[line.substring(0, colon).trim().lowercase()] = line.substring(colon + 1).trim()
-        }
-        if (status != 101) {
-            val n = (headers["content-length"]?.toIntOrNull() ?: 0).coerceIn(0, 8192)
-            val body = ByteArray(n)
-            var got = 0
-            while (got < n) { val r = input.read(body, got, n - got); if (r < 0) break; got += r }
-            return HttpResponse(status, headers, String(body, 0, got, Charsets.UTF_8))
-        }
-        val expect = java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1").digest((key + GUID).toByteArray(Charsets.US_ASCII)))
-        if (headers["sec-websocket-accept"] != expect) throw IOException("bad Sec-WebSocket-Accept")
-        return HttpResponse(status, headers, "")
-    }
-
-    private fun readLine(): String? {
-        val sb = StringBuilder()
-        while (true) {
-            val c = input.read()
-            if (c < 0) return if (sb.isEmpty()) null else sb.toString()
-            if (c == '\n'.code) { if (sb.isNotEmpty() && sb[sb.length - 1] == '\r') sb.setLength(sb.length - 1); return sb.toString() }
-            if (sb.length > 8192) throw IOException("header line too long")
-            sb.append(c.toChar())
-        }
-    }
 
     private fun readFully(buf: ByteArray, off: Int, len: Int) {
         var got = 0
@@ -152,8 +95,10 @@ class WsClient(val socket: Socket) {
 
     fun close(code: Int = 1000) {
         try { send(OP_CLOSE, byteArrayOf((code shr 8).toByte(), code.toByte()), 2) } catch (_: Exception) { }
-        try { socket.close() } catch (_: Exception) { }
+        abort()
     }
 
-    fun abort() { try { socket.close() } catch (_: Exception) { } }
+    fun abort() { try { closer() } catch (_: Exception) { } }
+
+    fun setTimeout(ms: Int) { try { timeout(ms) } catch (_: Exception) { } }
 }

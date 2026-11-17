@@ -11,8 +11,6 @@ class Settings {
     @Volatile var rr = "match"          // none | match | force60 | max. 가변 주사율 폰은 요청이 없으면 패널을 30Hz 로 내립니다(05 문서)
     @Volatile var wifiLock = true
     @Volatile var recreate = false      // 같은 크기의 설정 변경에도 디코더를 새로 만듦
-    @Volatile var legacy = false        // 진단 전용: LAN 의 인증 없는 서버 허용
-    @Volatile var listenPort = 0        // 진단 전용(F-41): 걸지 않고 듣기
     @Volatile var decoderName = ""      // 비교용으로 직접 고름
     @Volatile var holdLimit = 6         // 표시 대기열 상한(페이지 SCHED_MAX_QUEUE 와 같음)
     @Volatile var target = "pref"       // pref | early: 표시 목표 시각(리뷰 M1 의 4, early 는 폰에서 볼 실험 값)
@@ -185,7 +183,7 @@ class Snapshot(trace: TraceRing, windowNs: Long, now: Long) {
 /**
  * 기록 구간을 JSON 으로 저장합니다(설계 8.5). 측정 스크립트 record.js 와 같은 이름의 배열을 두어
  * analyze.js 가 읽을 수 있게 하고(frames 의 drawnAt = releaseNs: 페이지의 그리기 호출 시각과 같은 자리, 리뷰 B1),
- * 앱에만 있는 값은 app 아래에 둡니다. 토큰은 적지 않습니다.
+ * 앱에만 있는 값은 app 아래에 둡니다. 키는 적지 않습니다.
  */
 object Exporter {
     fun write(file: File, trace: TraceRing, counters: Counters, startNs: Long, endNs: Long, startHead: Long, info: Map<String, Any?>) {

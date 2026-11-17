@@ -8,8 +8,8 @@ plugins {
 // 다른 이름으로 앱을 내려면 이 세 값과 서명 키만 바꿉니다(설계 15.3).
 val appId = "io.playlink.app"
 val appScheme = "playlink"
-val appVersionCode = 3
-val appVersionName = "0.1.2"
+val appVersionCode = 4
+val appVersionName = "0.2.0"
 
 val keystoreFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply { if (keystoreFile.exists()) keystoreFile.inputStream().use { load(it) } }

@@ -1,6 +1,6 @@
 ﻿# 가상 기기(AVD Medium_Phone_API_35)를 창 없이 띄우고 adb 로 쓸 수 있을 때까지 기다립니다.
 # 사용: powershell -NoProfile -ExecutionPolicy Bypass -File start-avd.ps1 [-Gpu host|swiftshader_indirect] [-KillHung]
-# 이미 떠 있으면 다시 띄우지 않고 reverse 만 다시 겁니다. 자세한 설명: docs/04_device_lab.md
+# 이미 떠 있으면 다시 띄우지 않고 forward(PC 7400 → 기기 7300)만 다시 겁니다. 자세한 설명: docs/legacy/app/04_device_lab.md
 param(
     [string]$Gpu = 'host',
     [switch]$KillHung,
@@ -53,7 +53,9 @@ while (((Get-Date) - $t0).TotalSeconds -lt $TimeoutSec) {
 }
 if (-not $booted) { Write-Output "NOT READY: ${TimeoutSec}초 안에 부팅이 끝나지 않았습니다(adb 상태 '$state')."; exit 5 }
 
-& $Adb -s $Serial reverse tcp:7300 tcp:7300 | Out-Null
-& $Adb -s $Serial reverse tcp:7311 tcp:7311 | Out-Null
-Write-Output ("READY serial=$Serial ({0:n0}초) reverse: {1}" -f ((Get-Date) - $t0).TotalSeconds, ((& $Adb -s $Serial reverse --list) -join '; '))
+# 앱이 기기의 TCP 7300 에서 기다립니다. 예전 구조의 reverse(기기의 7300 을 adbd 가 차지함)가 남아 있으면 지우고,
+# PC 의 7400 을 기기의 7300 으로 넘깁니다(가상 기기의 주소는 PC 에서 닿지 않으므로 127.0.0.1:7400 으로 겁니다).
+& $Adb -s $Serial reverse --remove-all | Out-Null
+& $Adb -s $Serial forward tcp:7400 tcp:7300 | Out-Null
+Write-Output ("READY serial=$Serial ({0:n0}초) forward: {1}" -f ((Get-Date) - $t0).TotalSeconds, ((& $Adb -s $Serial forward --list) -join '; '))
 exit 0

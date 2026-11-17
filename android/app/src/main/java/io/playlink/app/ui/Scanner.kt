@@ -23,7 +23,7 @@ import com.google.zxing.qrcode.QRCodeReader
 import java.util.concurrent.Executors
 
 /**
- * 앱 안 QR 스캐너: CameraX 미리보기 + ZXing(core) 인식. 읽은 문자열을 그대로 넘깁니다(해석은 LinkParser).
+ * 앱 안 QR 스캐너: CameraX 미리보기 + ZXing(core) 인식. 읽은 문자열을 그대로 넘깁니다(해석은 proto.Proto.parseQr).
  * 인식은 기기 안에서만 하고 네트워크를 쓰지 않습니다.
  */
 class Scanner(private val activity: ComponentActivity, private val container: FrameLayout, private val onText: (String) -> Unit) {

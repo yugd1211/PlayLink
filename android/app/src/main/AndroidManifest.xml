@@ -3,6 +3,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 브로드캐스트로 오는 탐색 질문(UDP 7300)을 받으려면 MulticastLock 이 필요합니다 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -25,6 +27,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 카메라 앱이 페어링 QR(playlink://pair?…)을 열 때 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -33,7 +36,7 @@
             </intent-filter>
         </activity>
         <!-- 진단 입구(코드 리뷰 M5): adb(shell)만 통과합니다. DUMP 는 일반 앱이 가질 수 없는 권한입니다.
-             MainActivity 로 직접 온 인텐트는 진단 값과 명령을 항상 무시합니다. release 빌드(DIAG=false)는 이 입구도 무시합니다. -->
+             MainActivity 로 직접 온 인텐트는 진단 값과 명령을 항상 무시합니다. release 빌드(DIAG=false)는 이 입구의 진단 값과 명령도 무시합니다. -->
         <activity-alias
             android:name=".Diag"
             android:targetActivity=".MainActivity"
