@@ -1,0 +1,22 @@
+# Android 빌드 산출물과 캐시
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+# 서명 키와 비밀번호는 저장소에 넣지 않습니다
+*.jks
+*.keystore
+keystore.properties
+# 배포 파일은 GitHub Releases 로 올립니다
+*.apk
+dist/
+# 측정 기록과 로그
+tools/rec/
+tools/*.log
+# Unity 개발용 프로젝트(있을 때)
+[Ll]ibrary/
+[Tt]emp/
+[Ll]ogs/
+[Oo]bj/
+UserSettings/

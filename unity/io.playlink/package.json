@@ -1,0 +1,12 @@
+{
+  "name": "io.playlink",
+  "version": "0.2.0",
+  "displayName": "PlayLink",
+  "description": "Unity 에디터의 Game View 를 같은 Wi-Fi 의 안드로이드 폰에서 보고 터치로 조작합니다. 에디터 전용이며 빌드에 코드를 넣지 않습니다.",
+  "unity": "2022.3",
+  "license": "MIT",
+  "keywords": ["editor", "android", "remote", "game view"],
+  "dependencies": {
+    "com.unity.ugui": "1.0.0"
+  }
+}
