@@ -1,7 +1,7 @@
-// Unity 쪽 앞단(GameViewRemoteHost)과 입장 심사(GameViewRemoteGate), 자리 배정(GameViewRemoteSeats)을 이 PC에서 시험하는 스크립트 클라이언트.
+// Unity 쪽 앞단(PlayLinkHost)과 입장 심사(PlayLinkGate), 자리 배정(PlayLinkSeats)을 이 PC에서 시험하는 스크립트 클라이언트.
 // Unity 코드와 독립으로 쓴 구현입니다(Node 의 net + crypto 만 사용, WebSocket 을 직접 다룸). 폰이 필요 없습니다.
 //
-// 사용: node hosttest.js <시험 이름|all> --secret <프로젝트>/Library/GameViewRemote/secret.json [--host 192.168.25.5] [--port 7300] [--seconds 4]
+// 사용: node hosttest.js <시험 이름|all> --secret <프로젝트>/Library/PlayLink/secret.json [--host 192.168.25.5] [--port 7300] [--seconds 4]
 //   시험 이름: vectors reject paths auth abuse limits legacy seats lobby
 //   - vectors : 설계 3.2 의 시험 벡터 4개를 이 스크립트의 계산과 대조(서버 불필요)
 //   - reject  : 헤더 없음 401, sid 다름 403, 버전 426, 형식 400, Origin 403 (앞단)
@@ -30,7 +30,7 @@ const HEADER_BYTES = 28;
 
 const b64url = (buf) => buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 const fromB64url = (text) => Buffer.from(text.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-const proof = (key, role, channel, sid, cn, sn) => b64url(crypto.createHmac('sha256', key).update(`GVR-AUTH-1|${role}|${channel}|${sid}|${cn}|${sn}`, 'ascii').digest());
+const proof = (key, role, channel, sid, cn, sn) => b64url(crypto.createHmac('sha256', key).update(`PLAYLINK-AUTH-1|${role}|${channel}|${sid}|${cn}|${sn}`, 'ascii').digest());
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const randomDid = () => crypto.randomBytes(6).toString('hex');
 
@@ -139,11 +139,11 @@ async function openApp({ host = HOST, port = PORT, channel = 'video', did = rand
   const useKey = key || s.key;
   const nonce = cn || b64url(crypto.randomBytes(16));
   const header = Object.assign({ v: 1, sid: sid || s.sid, cn: nonce, proto: 2, app: 1, did, dev: 'node-test', take, caps }, fields);
-  const res = await request({ host, port, path: '/' + channel, headers: upgradeHeaders({ 'X-GVR-Auth': authHeader(header) }) });
-  const out = { status: res.status, errorCode: res.headers ? res.headers['x-gvr-error'] : undefined, res, did, cn: nonce };
+  const res = await request({ host, port, path: '/' + channel, headers: upgradeHeaders({ 'X-PlayLink-Auth': authHeader(header) }) });
+  const out = { status: res.status, errorCode: res.headers ? res.headers['x-playlink-error'] : undefined, res, did, cn: nonce };
   if (res.status !== 101) { if (res.sock) { res.sock.destroy(); } return out; }
   const reply = {};
-  for (const part of (res.headers['x-gvr-auth'] || '').split(';')) { const i = part.indexOf('='); if (i > 0) { reply[part.slice(0, i).trim()] = part.slice(i + 1).trim(); } }
+  for (const part of (res.headers['x-playlink-auth'] || '').split(';')) { const i = part.indexOf('='); if (i > 0) { reply[part.slice(0, i).trim()] = part.slice(i + 1).trim(); } }
   out.reply = reply;
   out.serverMacOk = reply.mac === proof(useKey, 'srv', channel, header.sid, nonce, reply.sn || '');
   const ws = new Ws(res.sock, res.rest);
@@ -168,15 +168,15 @@ tests.vectors = async () => {
   const cn = b64url(Buffer.from('101112131415161718191a1b1c1d1e1f', 'hex')), sn = b64url(Buffer.from('202122232425262728292a2b2c2d2e2f', 'hex'));
   check('토큰 t', b64url(key) === 'AAECAwQFBgcICQoLDA0ODw');
   check('cn / sn', cn === 'EBESExQVFhcYGRobHB0eHw' && sn === 'ICEiIyQlJicoKSorLC0uLw');
-  check('video/srv', proof(key, 'srv', 'video', 'GVRTEST1', cn, sn) === 'zlYoCj8gUA86fWTs4qY2TadXPchzopR2enL1BEPxpJI');
-  check('video/cli', proof(key, 'cli', 'video', 'GVRTEST1', cn, sn) === 'Mi9NohBmpvSBE-2kTt0VfZBmIWgNa6EWB0QnffebIdo');
-  check('input/srv', proof(key, 'srv', 'input', 'GVRTEST1', cn, sn) === 'Kk7tLqrnHm_XeaEg6zmPoh0GPiqeXig3W5oM7UBACbE');
-  check('input/cli', proof(key, 'cli', 'input', 'GVRTEST1', cn, sn) === 'HvOPi01ERvyDRbwzKcVNWcHperDPX6_b4mrWq30vi3w');
+  check('video/srv', proof(key, 'srv', 'video', 'PLKTEST1', cn, sn) === 'rASdAm0R4E9eOg8WrTdhWEl_tYFZPYQaTVDJQFcq7MI');
+  check('video/cli', proof(key, 'cli', 'video', 'PLKTEST1', cn, sn) === 'Kum7Uc2NTxLHeflx39gkJOZfTH0T9JUHS--WvYy_kR8');
+  check('input/srv', proof(key, 'srv', 'input', 'PLKTEST1', cn, sn) === 'L04dFts1PdX9hTbKhFnitvOCwRrHVJlvmdKtLpSdFms');
+  check('input/cli', proof(key, 'cli', 'input', 'PLKTEST1', cn, sn) === '5GsiBVEovxdUf6qehtU9FF2vtYkyHPwfOdV_X5P_Ijg');
 };
 
 tests.reject = async () => {
   let r = await request({ path: '/video', headers: upgradeHeaders() });
-  check('헤더 없음 → 401 auth_required', r.status === 401 && r.headers['x-gvr-error'] === 'auth_required', `${r.status} ${r.headers && r.headers['x-gvr-error']} body=${r.body}`);
+  check('헤더 없음 → 401 auth_required', r.status === 401 && r.headers['x-playlink-error'] === 'auth_required', `${r.status} ${r.headers && r.headers['x-playlink-error']} body=${r.body}`);
   if (r.sock) { r.sock.destroy(); }
   r = await request({ path: '/input', headers: upgradeHeaders() });
   check('입력 채널도 헤더 없음 → 401', r.status === 401, r.status);
@@ -191,8 +191,8 @@ tests.reject = async () => {
   a = await openApp({ did: 'BAD' });
   check('did 형식 오류 → 400 bad_request', a.status === 400 && a.errorCode === 'bad_request', `${a.status} ${a.errorCode}`);
   const s = loadSecret();
-  r = await request({ path: '/video', headers: upgradeHeaders({ Origin: 'http://localhost:' + PORT, 'X-GVR-Auth': authHeader({ v: 1, sid: s.sid, cn: b64url(crypto.randomBytes(16)), proto: 2, app: 1, did: randomDid() }) }) });
-  check('앞단에 Origin 이 있는 요청 → 403 bad_origin', r.status === 403 && r.headers['x-gvr-error'] === 'bad_origin', `${r.status} ${r.headers && r.headers['x-gvr-error']}`);
+  r = await request({ path: '/video', headers: upgradeHeaders({ Origin: 'http://localhost:' + PORT, 'X-PlayLink-Auth': authHeader({ v: 1, sid: s.sid, cn: b64url(crypto.randomBytes(16)), proto: 2, app: 1, did: randomDid() }) }) });
+  check('앞단에 Origin 이 있는 요청 → 403 bad_origin', r.status === 403 && r.headers['x-playlink-error'] === 'bad_origin', `${r.status} ${r.headers && r.headers['x-playlink-error']}`);
   r = await request({ path: '/x/audio', headers: upgradeHeaders() });
   check('등록되지 않은 채널 /x/audio → 404', r.status === 404, r.status);
 };
@@ -200,7 +200,7 @@ tests.reject = async () => {
 tests.paths = async () => {
   for (const path of ['/', '/index.html', '/stats', '/debug?pattern=1', '/favicon.ico']) {
     const r = await request({ path });
-    check(`GET ${path} → 404 not_found`, r.status === 404 && r.headers['x-gvr-error'] === 'not_found', r.status);
+    check(`GET ${path} → 404 not_found`, r.status === 404 && r.headers['x-playlink-error'] === 'not_found', r.status);
   }
   let r = await request({ path: '/c' });
   const html = r.body ? r.body.toString('utf8') : '';
@@ -216,7 +216,7 @@ tests.paths = async () => {
   check('GET /app.json', r.status === 200 || r.status === 404, `${r.status} ${r.body ? r.body.toString('utf8').slice(0, 120) : ''}`);
   r = await request({ path: '/apk' });
   if (r.status === 200) {
-    check('GET /apk → 200, 형식과 길이', r.headers['content-type'] === 'application/vnd.android.package-archive' && Number(r.headers['content-length']) === r.body.length && /attachment; filename="GameViewRemote.*\.apk"/.test(r.headers['content-disposition']),
+    check('GET /apk → 200, 형식과 길이', r.headers['content-type'] === 'application/vnd.android.package-archive' && Number(r.headers['content-length']) === r.body.length && /attachment; filename="PlayLink.*\.apk"/.test(r.headers['content-disposition']),
       `${r.body.length}B ${r.headers['content-disposition']} sha256=${crypto.createHash('sha256').update(r.body).digest('hex').slice(0, 16)}…`);
   } else {
     check('GET /apk → APK 없음이면 404', r.status === 404, r.status);
@@ -341,7 +341,7 @@ tests.legacy = async () => {
   r = await request({ host: lo, path: '/c' });
   check('루프백 GET /c → 착륙 페이지', r.status === 200 && r.body.toString('utf8').includes('intent://'), r.status);
   r = await request({ host: lo, path: '/video', headers: upgradeHeaders({ Origin: 'http://localhost:' + PORT }) });
-  check('루프백, 헤더 없음, Origin = 자기 페이지 → 101 (Chrome 페이지 경로)', r.status === 101 && !r.headers['x-gvr-auth'], r.status);
+  check('루프백, 헤더 없음, Origin = 자기 페이지 → 101 (Chrome 페이지 경로)', r.status === 101 && !r.headers['x-playlink-auth'], r.status);
   if (r.status === 101) {
     const ws = new Ws(r.sock, r.rest);
     await waitFor(() => ws.texts.length > 0, 1500);
@@ -357,7 +357,7 @@ tests.legacy = async () => {
   check('루프백, 헤더 없음, Origin 없음 → 101 (측정 스크립트 경로)', r.status === 101, r.status);
   if (r.sock) { r.sock.destroy(); }
   r = await request({ host: lo, path: '/video', headers: upgradeHeaders({ Origin: 'http://evil.example' }) });
-  check('루프백, 다른 Origin → 403 bad_origin', r.status === 403 && r.headers['x-gvr-error'] === 'bad_origin', r.status);
+  check('루프백, 다른 Origin → 403 bad_origin', r.status === 403 && r.headers['x-playlink-error'] === 'bad_origin', r.status);
   r = await request({ host: lo, path: '/input', headers: upgradeHeaders({ Origin: 'http://127.0.0.1:' + PORT }) });
   check('루프백 입력 소켓 → 101', r.status === 101, r.status);
   if (r.status === 101) {
@@ -522,7 +522,7 @@ tests.hold = async () => {
 // ---- 코드 리뷰(07_code_review_unity.md) 수정 확인 ----
 // M2: 같은 앱(did)이 영상 소켓을 하나 더 열면 옛 소켓이 4409 로 닫히고, 새 소켓은 H.264 를 받는다(예전에는 둘 다 MJPEG 로 떨어짐)
 // 실제 앱(가상 기기)이 보고 있을 때 돌립니다: 그 앱의 did 로 영상 소켓을 하나 더 엽니다 → 서버가 앱의 옛 소켓을 4409 로 닫습니다.
-// 사용: node hosttest.js dupapp --secret … --did <앱의 did> [--seconds 6]   (did 는 Unity 의 GameViewRemoteHost.Viewers 의 group "app:<did>")
+// 사용: node hosttest.js dupapp --secret … --did <앱의 did> [--seconds 6]   (did 는 Unity 의 PlayLinkHost.Viewers 의 group "app:<did>")
 // 그 뒤 기기에서 앱 화면을 봅니다(이 스크립트는 --seconds 동안 새 소켓을 쥐고 있다가 놓습니다).
 tests.dupapp = async () => {
   const did = opt('did', null);
@@ -609,7 +609,7 @@ tests.stall = async () => {
 tests.fixes = async () => {
   const lo = '127.0.0.1';
   let r = await request({ host: lo, path: '/video', headers: upgradeHeaders({ Origin: 'http://localhost:9999' }) });
-  check('루프백, Origin 의 포트가 다름(localhost:9999) → 403 bad_origin', r.status === 403 && r.headers['x-gvr-error'] === 'bad_origin', r.status);
+  check('루프백, Origin 의 포트가 다름(localhost:9999) → 403 bad_origin', r.status === 403 && r.headers['x-playlink-error'] === 'bad_origin', r.status);
   if (r.sock) { r.sock.destroy(); }
   r = await request({ host: lo, path: '/video', headers: upgradeHeaders({ Origin: 'http://localhost' }) });
   check('루프백, Origin 에 포트 없음(= 80) → 403', r.status === 403, r.status);
@@ -632,7 +632,7 @@ tests.fixes = async () => {
   check('Host 헤더가 없는 요청 → 200 (측정 스크립트)', r.status === 200, r.status);
   r = await request({ path: '/c' });
   const html = r.body ? r.body.toString('utf8') : '';
-  check('착륙 페이지: 패키지와 스킴이 서버 값으로 채워짐', html.includes("'kr.co.seeplay.gvr'") && html.includes("'seeplay-gvr'") && !html.includes('%%GVR_'), html.length + '자');
+  check('착륙 페이지: 패키지와 스킴이 서버 값으로 채워짐', html.includes("'io.playlink.app'") && html.includes("'playlink'") && !html.includes('%%PLAYLINK_'), html.length + '자');
   check('착륙 페이지: 연결 값을 형식 전체로 검사하고 다시 조립', html.includes('FORMAT.exec') && !html.includes("'/c?' + link"));
   // /apk: 같은 주소에서는 한 번에 하나만. 읽지 않는 연결 하나를 걸어 두고 두 번째
   const head = await request({ path: '/apk', method: 'HEAD' });
@@ -643,7 +643,7 @@ tests.fixes = async () => {
     first.pause();
     await sleep(400);
     r = await request({ path: '/apk' });
-    check('/apk: 같은 주소에서 받는 중이면 두 번째는 503 busy', r.status === 503 && r.headers['x-gvr-error'] === 'busy', r.status);
+    check('/apk: 같은 주소에서 받는 중이면 두 번째는 503 busy', r.status === 503 && r.headers['x-playlink-error'] === 'busy', r.status);
     r = await request({ path: '/apk', method: 'HEAD' });
     check('/apk HEAD 는 받는 중에도 200', r.status === 200, r.status);
     if (r.sock) { r.sock.destroy(); }

@@ -31,7 +31,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     /// <summary>
     /// Represents a QR code containing text or binary data.

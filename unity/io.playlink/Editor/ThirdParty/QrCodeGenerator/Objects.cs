@@ -27,7 +27,7 @@
 
 using System;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     /// <summary>
     /// Helper functions to check for valid arguments.

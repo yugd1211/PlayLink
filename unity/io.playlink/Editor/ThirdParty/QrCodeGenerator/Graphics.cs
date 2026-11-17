@@ -29,7 +29,7 @@ using System;
 using System.Globalization;
 using System.Text;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     internal class Graphics
     {

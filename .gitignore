@@ -20,3 +20,7 @@ tools/*.log
 [Ll]ogs/
 [Oo]bj/
 UserSettings/
+# 시험용 Unity 프로젝트의 로그
+unity/TestProject/*.log
+# Unity 창이 폰에 내주는 APK 자리(빌드 결과 복사본)
+App~/

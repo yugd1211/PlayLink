@@ -12,7 +12,7 @@ $Avd = 'Medium_Phone_API_35'
 $AvdDir = "$env:USERPROFILE\.android\avd\Medium_Phone.avd"
 $EmuDir = "$env:LOCALAPPDATA\Android\Sdk\emulator"
 $Adb = 'C:\Program Files\Unity\Hub\Editor\2022.3.62f2\Editor\Data\PlaybackEngines\AndroidPlayer\SDK\platform-tools\adb.exe'
-$LogDir = "$env:TEMP\gvr-device-lab"
+$LogDir = "$env:TEMP\playlink-device-lab"
 New-Item -ItemType Directory -Force $LogDir | Out-Null
 
 function DeviceState { $l = (& $Adb devices) | Where-Object { $_ -match "^$Serial\s" }; if ($l) { ($l -split '\s+')[1] } else { '' } }

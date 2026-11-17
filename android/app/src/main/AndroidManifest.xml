@@ -14,7 +14,7 @@
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:enableOnBackInvokedCallback="true"
-        android:theme="@style/GvrTheme">
+        android:theme="@style/PlayLinkTheme">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -29,7 +29,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="${gvrScheme}" />
+                <data android:scheme="${appScheme}" />
             </intent-filter>
         </activity>
         <!-- 진단 입구(코드 리뷰 M5): adb(shell)만 통과합니다. DUMP 는 일반 앱이 가질 수 없는 권한입니다.

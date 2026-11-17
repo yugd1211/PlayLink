@@ -2,7 +2,7 @@
 //  - 시작할 때 ffmpeg 를 실제 서버와 같은 인코더 인자로 한 번 돌려(입력만 테스트 패턴) H.264 를 녹화해 두고,
 //    FLV 태그 → 28바이트 헤더 + avcC/AVCC 로 정밀한 간격(--interval ms, 기본 1000/fps)에 맞춰 반복 재생합니다.
 //  - 수신 확인 역압, caps/key/take, 입력 소켓의 ping 답과 inputSeq 반영(터치 에코), 인증 1(설계 3.2/3.3), 닫기 코드, 자리/대기실.
-// 사용: node replay.js [--port=7311] [--bind=127.0.0.1] [--auth] [--sid=GVRTEST2] [--token=<22자>] [--codec=nvenc|x264]
+// 사용: node replay.js [--port=7311] [--bind=127.0.0.1] [--auth] [--sid=PLKTEST2] [--token=<22자>] [--codec=nvenc|x264]
 //        [--kbps=6000] [--size=720x1280] [--fps=60] [--interval=16.61] [--clip=20] [--lobby=<초>] [--standby] [--ffmpeg=<경로>] [--app=<versionCode>]
 // 제어(루프백 전용): GET /ctl?close=<코드> | standby=1 | active=1 | stale=<문구> | stale=  ,  GET /stats
 // LAN 에 열 때는 node.exe 로만(이 PC의 방화벽에서 이미 허용). 토큰은 로그에 찍지 않습니다.
@@ -10,7 +10,7 @@
 const net = require('net'), crypto = require('crypto'), fs = require('fs'), path = require('path'), { spawn } = require('child_process');
 const arg = (k, d) => { const a = process.argv.find((x) => x === '--' + k || x.startsWith('--' + k + '=')); return a ? (a.includes('=') ? a.slice(k.length + 3) : true) : d; };
 const PORT = Number(arg('port', 7311)), BIND = arg('bind', '127.0.0.1'), AUTH = !!arg('auth', false);
-const SID = arg('sid', 'GVRTEST2'), TOKEN = arg('token', 'AAECAwQFBgcICQoLDA0ODw'), KEY = Buffer.from(TOKEN, 'base64url');
+const SID = arg('sid', 'PLKTEST2'), TOKEN = arg('token', 'AAECAwQFBgcICQoLDA0ODw'), KEY = Buffer.from(TOKEN, 'base64url');
 const [W, H] = String(arg('size', '720x1280')).split('x').map(Number), FPS = Number(arg('fps', 60)), KBPS = Number(arg('kbps', 6000));
 const CODEC = arg('codec', 'nvenc'), APPVER = Number(arg('app', 1)), LOBBY_S = Number(arg('lobby', 0)), START_STANDBY = !!arg('standby', false);
 const FF_DEFAULT = 'C:\\Users\\dbrud\\Tools\\ffmpeg-gvr\\ffmpeg-n8.1-latest-win64-gpl-8.1\\bin\\ffmpeg.exe';
@@ -19,7 +19,7 @@ const t0 = process.hrtime.bigint();
 const nowMs = () => Number(process.hrtime.bigint() - t0) / 1e6;
 const log = (...a) => console.log(nowMs().toFixed(0).padStart(8), ...a);
 const b64u = (b) => b.toString('base64url');
-const proof = (role, ch, cn, sn) => b64u(crypto.createHmac('sha256', KEY).update(`GVR-AUTH-1|${role}|${ch}|${SID}|${cn}|${sn}`).digest());
+const proof = (role, ch, cn, sn) => b64u(crypto.createHmac('sha256', KEY).update(`PLAYLINK-AUTH-1|${role}|${ch}|${SID}|${cn}|${sn}`).digest());
 const parseAuth = (v) => Object.fromEntries(String(v).split(';').map((p) => p.trim()).filter((p) => p.includes('=')).map((p) => [p.slice(0, p.indexOf('=')).trim(), p.slice(p.indexOf('=') + 1).trim()]));
 
 let clients = [], nextId = 1, frameId = 0, lastInputSeq = 0, inputCount = 0, lobbyOver = LOBBY_S <= 0, preAuth = 0;
@@ -39,7 +39,7 @@ function httpReply(sock, status, type, body, extra) {
   const b = Buffer.isBuffer(body) ? body : Buffer.from(body);
   sock.end(Buffer.concat([Buffer.from(`HTTP/1.1 ${status}\r\nContent-Type: ${type}\r\nContent-Length: ${b.length}\r\n${extra || ''}Cache-Control: no-store\r\nConnection: close\r\n\r\n`), b]));
 }
-const httpError = (sock, status, code, msg) => httpReply(sock, status, 'application/json; charset=utf-8', JSON.stringify({ t: 'err', code, msg }), `X-GVR-Error: ${code}\r\n`);
+const httpError = (sock, status, code, msg) => httpReply(sock, status, 'application/json; charset=utf-8', JSON.stringify({ t: 'err', code, msg }), `X-PlayLink-Error: ${code}\r\n`);
 
 // ---------------------------------------------------------------- 녹화해 둔 H.264 를 정밀한 간격으로 재생
 // 시작할 때 ffmpeg 로 CLIP_S 초를 한 번 인코딩해(실제 서버와 같은 인코더 인자, 입력만 테스트 패턴) 메모리에 두고,
@@ -180,7 +180,7 @@ const server = net.createServer((sock) => {
     const accept = crypto.createHash('sha1').update(headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
     let resp = `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n`;
     c = { id: nextId++, kind, sock, unacked: [], ready: false, standby: false, lobby: false, auth: 'none', did: 'page', seatCap: false, authPending: false, cn: '', sn: '' };
-    const a = headers['x-gvr-auth'];
+    const a = headers['x-playlink-auth'];
     if (AUTH && a) {
       const f = parseAuth(a);
       if (f.v !== '1') { c = null; return httpError(sock, '426 Upgrade Required', 'auth_version', '인증 절차 버전이 맞지 않습니다'); }
@@ -190,7 +190,7 @@ const server = net.createServer((sock) => {
       if (preAuth >= 8) { c = null; return httpError(sock, '503 Service Unavailable', 'busy', ''); }
       c.cn = f.cn; c.sn = b64u(crypto.randomBytes(16)); c.did = 'app:' + f.did; c.take = f.take === '1'; c.seatCap = (f.caps || '').split(',').includes('seat');
       c.authPending = true; preAuth++;
-      resp += `X-GVR-Auth: v=1; sn=${c.sn}; mac=${proof('srv', kind, c.cn, c.sn)}; proto=2; app=${APPVER}; caps=h264,seat,take; name=Replay\r\n`;
+      resp += `X-PlayLink-Auth: v=1; sn=${c.sn}; mac=${proof('srv', kind, c.cn, c.sn)}; proto=2; app=${APPVER}; caps=h264,seat,take; name=Replay\r\n`;
       c.authTimer = setTimeout(() => { if (c.authPending) { log('auth timeout', c.id); closeWith(c, 4401); } }, 3000);
     } else if (AUTH && !loopback) { c = null; return httpError(sock, '401 Unauthorized', 'auth_required', 'QR 연결이 필요합니다'); }
     upgraded = true;

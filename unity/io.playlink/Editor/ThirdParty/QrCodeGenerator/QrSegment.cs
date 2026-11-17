@@ -32,7 +32,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     /// <summary>
     /// Represents a segment of character/binary/control data in a QR code symbol.

@@ -1,37 +1,49 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
 // 다른 이름으로 앱을 내려면 이 세 값과 서명 키만 바꿉니다(설계 15.3).
-val gvrApplicationId = "kr.co.seeplay.gvr"
-val gvrScheme = "seeplay-gvr"
-val gvrVersionCode = 3
-val gvrVersionName = "0.1.2"
+val appId = "io.playlink.app"
+val appScheme = "playlink"
+val appVersionCode = 3
+val appVersionName = "0.1.2"
+
+val keystoreFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply { if (keystoreFile.exists()) keystoreFile.inputStream().use { load(it) } }
 
 android {
-    namespace = "kr.co.seeplay.gvr"   // 코드 패키지(식별자와 별개)
+    namespace = "io.playlink.app"   // 코드 패키지(식별자와 별개)
     compileSdk = 36
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
-        applicationId = gvrApplicationId
+        applicationId = appId
         minSdk = 26
         targetSdk = 36
-        versionCode = gvrVersionCode
-        versionName = gvrVersionName
-        manifestPlaceholders["gvrScheme"] = gvrScheme
-        buildConfigField("String", "SCHEME", "\"$gvrScheme\"")
+        versionCode = appVersionCode
+        versionName = appVersionName
+        manifestPlaceholders["appScheme"] = appScheme
+        buildConfigField("String", "SCHEME", "\"$appScheme\"")
         buildConfigField("boolean", "DIAG", "true")
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
+    // 서명 키와 비밀번호는 저장소에 넣지 않습니다. android/keystore.properties(.gitignore)에서 읽고,
+    // 파일이 없으면 이 PC 의 안드로이드 디버그 키로 서명합니다(PC 마다 서명이 달라 서로 덮어 설치되지 않습니다).
+    //   storeFile=<jks 경로>  storePassword=…  keyAlias=…  keyPassword=…
     signingConfigs {
         create("proto") {
-            storeFile = file("../keystore/gvr-proto.jks")
-            storePassword = "gvrproto"
-            keyAlias = "gvr"
-            keyPassword = "gvrproto"
+            if (keystoreFile.exists()) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            } else {
+                initWith(getByName("debug"))
+            }
         }
     }
 

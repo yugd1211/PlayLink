@@ -28,7 +28,7 @@
 using System;
 using System.Collections;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     /// <summary>
     /// Extension methods for the <see cref="BitArray"/> class.

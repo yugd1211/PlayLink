@@ -28,7 +28,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     /// <summary>
     /// The exception that is thrown when the supplied data does not fit in the QR code.

@@ -1044,7 +1044,7 @@ GameViewRemoteApp/
 
 ### 10.3 서명
 
-- 시제품 전용 키 저장소를 프로젝트에 넣습니다: `keytool -genkeypair -keystore android/keystore/gvr-proto.jks -alias gvr -keyalg RSA -keysize 2048 -validity 10950 -storepass gvrproto -keypass gvrproto -dname "CN=GVR Prototype"`.
+- 시제품 전용 키 저장소를 프로젝트에 넣습니다: `keytool -genkeypair -keystore android/keystore/gvr-proto.jks -alias gvr -keyalg RSA -keysize 2048 -validity 10950 -storepass <비밀번호> -keypass <비밀번호> -dname "CN=GVR Prototype"`.
 - `signingConfigs` 하나를 `debug` 와 `release` 빌드 유형이 함께 씁니다. v2 서명(AGP 기본). 어느 PC에서 빌드해도 같은 키라 덮어 설치됩니다(F-22).
 - 이 키는 저장소에 든 **공개된 것과 같은 키**입니다. 사내 배포 전에 따로 보관하는 키로 바꿉니다(PRD O6, NF-63 ③). 키를 바꾸면 기존 설치는 지우고 다시 깔아야 합니다.
 - (리뷰 M7, 브리프 3.3의 3) 빌드 유형은 셋입니다: `debug`(디버그 가능, 개발용), **`proto`**(`initWith(release)`, `isDebuggable = false`, 난독화 끔, 같은 키, `BuildConfig.DIAG = true`), `release`(`DIAG = false`). **배포와 합격 수치 측정은 `proto` 빌드**로 하고 수치마다 빌드 유형을 적습니다. 기록 파일은 `adb pull` 로 가져옵니다(`run-as` 불필요). `DIAG` 가 꺼진 `release` 에서 진단 분기가 동작하지 않는지는 8단계에서 확인합니다.

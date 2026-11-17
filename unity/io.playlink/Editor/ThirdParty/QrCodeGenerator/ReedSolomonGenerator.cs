@@ -28,7 +28,7 @@
 using System;
 using System.Diagnostics;
 
-namespace GameViewRemoteThirdParty.QrCodeGenerator
+namespace PlayLinkThirdParty.QrCodeGenerator
 {
     /// <summary>
     /// Computes the Reed-Solomon error correction codewords for a sequence of data codewords at a given degree.
